@@ -1,0 +1,116 @@
+package com.syncdroid.app.mesh
+
+import com.syncdroid.app.data.FolderAnnouncementEntity
+import com.syncdroid.app.data.MembershipEventEntity
+import com.syncdroid.app.data.SyncDroidDatabase
+import com.syncdroid.app.data.SyncExceptionEventEntity
+import com.syncdroid.app.sync.FolderExceptionRepository
+import com.syncdroid.app.sync.VersionVector
+import org.json.JSONArray
+
+class MeshReplicationRepository(
+    database: SyncDroidDatabase,
+    signer: DeviceSigner,
+) {
+    private val meshDao = database.meshDao()
+    private val syncDao = database.syncDao()
+    private val memberships = MeshMembershipRepository(meshDao)
+    private val folders = MeshFolderRepository(database, signer.deviceId)
+    private val exceptions = FolderExceptionRepository(database, signer)
+    private val chat = MeshChatRepository(database, signer)
+    private val chatDao = database.chatDao()
+
+    suspend fun export(groupId: String, groupName: String): MeshStateBundle = MeshStateBundle(
+        groupName = groupName,
+        membershipEvents = meshDao.membershipEvents(groupId).map(MembershipEventEntity::toDomain),
+        folderAnnouncements = syncDao.folderAnnouncements(groupId).map(FolderAnnouncementEntity::toDomain),
+        syncExceptionEvents = syncDao.syncExceptionEvents(groupId).map(SyncExceptionEventEntity::toDomain),
+        chatMessages = chatDao.recentMessages(groupId, MAX_REPLICATED_CHAT_MESSAGES)
+            .asReversed()
+            .map { it.toDomain() },
+    )
+
+    suspend fun receive(bundle: MeshStateBundle): MeshReceiveResult {
+        require(bundle.membershipEvents.isNotEmpty()) { "A mesh bundle must include its membership proof" }
+        val groupIds = bundle.membershipEvents.map(MembershipEvent::groupId).toSet() +
+            bundle.folderAnnouncements.map(FolderAnnouncement::groupId) +
+            bundle.syncExceptionEvents.map(SyncExceptionEvent::groupId) +
+            bundle.chatMessages.map(MeshChatMessage::groupId)
+        require(groupIds.size == 1) { "A mesh bundle cannot mix groups" }
+        val groupId = groupIds.single()
+
+        memberships.rebuildProjection(groupId, bundle.groupName)
+
+        val remaining = bundle.membershipEvents.sortedBy(MembershipEvent::createdAtMillis).toMutableList()
+        var madeProgress: Boolean
+        do {
+            madeProgress = false
+            val iterator = remaining.iterator()
+            while (iterator.hasNext()) {
+                val event = iterator.next()
+                val result = memberships.apply(bundle.groupName, event)
+                if (result.isSuccess) {
+                    iterator.remove()
+                    madeProgress = true
+                }
+            }
+        } while (madeProgress && remaining.isNotEmpty())
+        require(remaining.isEmpty()) { "Mesh bundle contains membership events without a trusted signer chain" }
+
+        bundle.folderAnnouncements
+            .sortedBy(FolderAnnouncement::createdAtMillis)
+            .forEach { folders.receive(it) }
+        bundle.syncExceptionEvents
+            .sortedWith(compareBy(SyncExceptionEvent::createdAtMillis, SyncExceptionEvent::eventId))
+            .forEach { exceptions.receive(it) }
+        val newChatMessages = bundle.chatMessages
+            .sortedWith(compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId))
+            .filter { chat.receive(it) }
+        return MeshReceiveResult(newChatMessages)
+    }
+}
+
+data class MeshReceiveResult(val newChatMessages: List<MeshChatMessage> = emptyList())
+
+private const val MAX_REPLICATED_CHAT_MESSAGES = 5_000
+
+private fun MembershipEventEntity.toDomain() = MembershipEvent(
+    eventId = eventId,
+    groupId = groupId,
+    eventType = MembershipEventType.valueOf(eventType),
+    subjectDeviceId = subjectDeviceId,
+    subjectDisplayName = subjectDisplayName,
+    subjectPublicKeyBase64 = subjectPublicKeyBase64,
+    signerDeviceId = signerDeviceId,
+    parentEventIds = JSONArray(parentEventIdsJson).strings(),
+    version = VersionVector.fromJson(versionVectorJson),
+    createdAtMillis = createdAtMillis,
+    signatureBase64 = signatureBase64,
+)
+
+private fun FolderAnnouncementEntity.toDomain() = FolderAnnouncement(
+    eventId = eventId,
+    groupId = groupId,
+    folderId = folderId,
+    displayName = displayName,
+    includePatterns = JSONArray(includePatternsJson).strings(),
+    excludePatterns = JSONArray(excludePatternsJson).strings(),
+    signerDeviceId = signerDeviceId,
+    version = VersionVector.fromJson(versionVectorJson),
+    createdAtMillis = createdAtMillis,
+    signatureBase64 = signatureBase64,
+)
+
+private fun SyncExceptionEventEntity.toDomain() = SyncExceptionEvent(
+    eventId = eventId,
+    groupId = groupId,
+    folderId = folderId,
+    relativePath = relativePath,
+    active = active,
+    signerDeviceId = signerDeviceId,
+    version = VersionVector.fromJson(versionVectorJson),
+    createdAtMillis = createdAtMillis,
+    signatureBase64 = signatureBase64,
+)
+
+private fun JSONArray.strings(): List<String> = List(length()) { getString(it) }

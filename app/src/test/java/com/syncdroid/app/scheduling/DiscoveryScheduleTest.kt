@@ -1,0 +1,66 @@
+package com.syncdroid.app.scheduling
+
+import java.time.LocalTime
+import java.time.LocalDateTime
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Test
+
+class DiscoveryScheduleTest {
+    @Test
+    fun fiveMinutePingsCreateOverlappingRendezvousCoverage() {
+        val windows = discoveryWindows(LocalTime.of(18, 0), intervalMinutes = 5, count = 3)
+
+        assertEquals(listOf("18:00–18:05", "18:05–18:10", "18:10–18:15"), windows.map { it.label() })
+    }
+
+    @Test
+    fun intervalMustBePositive() {
+        assertThrows(IllegalArgumentException::class.java) {
+            discoveryWindows(LocalTime.NOON, intervalMinutes = 0)
+        }
+    }
+
+    @Test
+    fun fifteenMinuteScheduleStartsAtNextSharedClockBoundary() {
+        val windows = alignedDiscoveryWindows(LocalTime.of(18, 7, 30), intervalMinutes = 15, count = 4)
+
+        assertEquals(
+            listOf("18:15–18:20", "18:30–18:35", "18:45–18:50", "19:00–19:05"),
+            windows.map { it.label() },
+        )
+    }
+
+    @Test
+    fun fiveMinuteScheduleUsesZeroFiveTenBoundaries() {
+        val windows = alignedDiscoveryWindows(LocalTime.of(9, 1), intervalMinutes = 5, count = 3)
+
+        assertEquals(
+            listOf("09:05:00–09:05:30", "09:10:00–09:10:30", "09:15:00–09:15:30"),
+            windows.map { it.label() },
+        )
+    }
+
+    @Test
+    fun exactBoundaryAdvancesToNextInterval() {
+        assertEquals(LocalTime.of(18, 30), nextRendezvousStart(LocalTime.of(18, 15), 15))
+    }
+
+    @Test
+    fun nextBoundaryRollsIntoTomorrow() {
+        val now = LocalDateTime.of(2026, 8, 15, 23, 59, 30)
+
+        assertEquals(LocalDateTime.of(2026, 8, 16, 0, 0), nextRendezvousStart(now, 15))
+        assertEquals(30_000L, millisUntilNextRendezvous(now, 15))
+    }
+
+    @Test
+    fun cadenceDefaultsCanBeOverridden() {
+        assertEquals(30L, DiscoveryPolicy(intervalMinutes = 5).windowSeconds)
+        assertEquals(300L, DiscoveryPolicy(intervalMinutes = 15).windowSeconds)
+        assertEquals(
+            60L,
+            DiscoveryPolicy(intervalMinutes = 5, windowSecondsOverride = 60).windowSeconds,
+        )
+    }
+}

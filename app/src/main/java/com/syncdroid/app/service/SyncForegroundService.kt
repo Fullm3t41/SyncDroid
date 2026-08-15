@@ -1,0 +1,350 @@
+package com.syncdroid.app.service
+
+import android.app.Service
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.IBinder
+import android.text.format.DateFormat
+import androidx.core.app.ServiceCompat
+import com.syncdroid.app.data.SyncDroidDatabase
+import com.syncdroid.app.mesh.AndroidDeviceIdentity
+import com.syncdroid.app.mesh.LocalDeviceNameStore
+import com.syncdroid.app.mesh.LocalMeshProfile
+import com.syncdroid.app.mesh.LocalMeshProfileStore
+import com.syncdroid.app.mesh.MembershipEvent
+import com.syncdroid.app.mesh.MeshRuntime
+import com.syncdroid.app.mesh.MeshRuntimeEvent
+import com.syncdroid.app.mesh.MeshMembershipRepository
+import com.syncdroid.app.notifications.SyncNotificationCenter
+import com.syncdroid.app.scheduling.DiscoveryPolicy
+import com.syncdroid.app.scheduling.DiscoveryPolicyStore
+import com.syncdroid.app.sync.SyncStatusStore
+import com.syncdroid.app.sync.VersionVector
+import com.syncdroid.app.sync.formatTransferRate
+import com.syncdroid.app.wifi.WifiConnectionMonitor
+import com.syncdroid.app.wifi.WifiConnectionState
+import com.syncdroid.app.wifi.WifiSyncPolicyStore
+import com.syncdroid.app.wifi.hasWifiRuntimePermission
+import java.util.Date
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+
+class SyncForegroundService : Service() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private lateinit var database: SyncDroidDatabase
+    private lateinit var identity: AndroidDeviceIdentity
+    private lateinit var notification: SyncServiceNotification
+    private lateinit var eventNotifications: SyncNotificationCenter
+    private lateinit var wifiMonitor: WifiConnectionMonitor
+    private var wifiConnection = WifiConnectionState()
+    private var runtime: MeshRuntime? = null
+    private var runtimeKey: RuntimeKey? = null
+    private var reconcileJob: Job? = null
+    private val activePeers = linkedMapOf<String, String>()
+    private val peerTransferRates = linkedMapOf<String, Long>()
+    private var statusTitle = "Starting background sync"
+    private var statusDetail = "Checking Wi-Fi and mesh settings"
+
+    override fun onCreate() {
+        super.onCreate()
+        database = SyncDroidDatabase.get(this)
+        identity = AndroidDeviceIdentity()
+        notification = SyncServiceNotification(this)
+        eventNotifications = SyncNotificationCenter(this)
+
+        ServiceCompat.startForeground(
+            this,
+            SyncServiceNotification.NOTIFICATION_ID,
+            notification.build(statusTitle, statusDetail, DiscoveryPolicyStore(this).load()),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+        )
+        SyncServiceController.report(running = true, status = statusTitle)
+
+        serviceScope.launch {
+            SyncServiceController.appInForeground.collect {
+                publishNotification()
+            }
+        }
+        wifiMonitor = WifiConnectionMonitor(applicationContext)
+        wifiMonitor.start { connection ->
+            wifiConnection = connection
+            reconcile(force = false)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_CYCLE_INTERVAL -> {
+                val store = DiscoveryPolicyStore(this)
+                val current = store.load()
+                store.save(current.copy(
+                    intervalMinutes = nextValue(current.intervalMinutes, DiscoveryPolicy.SUPPORTED_INTERVALS.sorted()),
+                    windowSecondsOverride = null,
+                ))
+                SyncServiceController.report(policyChanged = true)
+                reconcile(force = true)
+            }
+            ACTION_CYCLE_WINDOW -> {
+                val store = DiscoveryPolicyStore(this)
+                val current = store.load()
+                store.save(current.copy(
+                    windowSecondsOverride = nextValue(current.windowSeconds, DiscoveryPolicy.SUPPORTED_WINDOWS_SECONDS.sorted()),
+                ))
+                SyncServiceController.report(policyChanged = true)
+                reconcile(force = true)
+            }
+            ACTION_REFRESH -> reconcile(force = true)
+            else -> reconcile(force = false)
+        }
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        reconcileJob?.cancel()
+        runtime?.close()
+        runtime = null
+        wifiMonitor.stop()
+        serviceScope.cancel()
+        SyncServiceController.report(
+            running = false,
+            status = "Background sync stopped",
+            activePeerIds = emptySet(),
+        )
+        super.onDestroy()
+    }
+
+    private fun reconcile(force: Boolean) {
+        reconcileJob?.cancel()
+        reconcileJob = serviceScope.launch {
+            val discoveryPolicy = DiscoveryPolicyStore(this@SyncForegroundService).load()
+            val wifiPolicy = WifiSyncPolicyStore(this@SyncForegroundService).load()
+            val profile = LocalMeshProfileStore(this@SyncForegroundService).getOrCreate()
+            val permissionGranted = hasWifiRuntimePermission(this@SyncForegroundService)
+            val syncAllowed = permissionGranted && wifiPolicy.allowsSync(
+                wifiConnection.isWifiConnected,
+                wifiConnection.ssid,
+            )
+            val key = RuntimeKey(
+                groupId = profile.groupId,
+                intervalMinutes = discoveryPolicy.intervalMinutes,
+                windowSeconds = discoveryPolicy.windowSeconds,
+                scheduledDiscoveryEnabled = discoveryPolicy.scheduledDiscoveryEnabled,
+                syncAllowed = syncAllowed,
+                wifiConnected = wifiConnection.isWifiConnected,
+                wifiSsid = wifiConnection.ssid,
+                permissionGranted = permissionGranted,
+            )
+            if (!force && key == runtimeKey) {
+                publishNotification()
+                return@launch
+            }
+
+            runtime?.close()
+            runtime = null
+            activePeers.clear()
+            peerTransferRates.clear()
+
+            when {
+                !permissionGranted -> setStatus(
+                    "Sync paused",
+                    "Open SyncDroid and allow nearby Wi-Fi access",
+                )
+                !wifiConnection.isWifiConnected -> setStatus(
+                    "Sync paused",
+                    "Connect this device to Wi-Fi",
+                )
+                !syncAllowed -> setStatus(
+                    "Sync paused on this network",
+                    wifiConnection.ssid?.let { "$it is not registered for syncing" }
+                        ?: "The current Wi-Fi network is not registered",
+                )
+                !ensureLocalMembership(profile) -> setStatus(
+                    "Mesh needs attention",
+                    "Open SyncDroid to repair or join the mesh",
+                )
+                else -> startRuntime(profile, discoveryPolicy, force)
+            }
+            runtimeKey = key
+        }
+    }
+
+    private suspend fun ensureLocalMembership(profile: LocalMeshProfile): Boolean = try {
+        val repository = MeshMembershipRepository(database.meshDao())
+        val existing = database.meshDao().getDevice(profile.groupId, identity.deviceId)
+            ?: if (repository.restoreCreatorProjection(
+                    groupId = profile.groupId,
+                    groupName = profile.groupName,
+                    expectedCreatorDeviceId = identity.deviceId,
+                )) database.meshDao().getDevice(profile.groupId, identity.deviceId) else null
+        if (existing == null) {
+            repository.apply(
+                profile.groupName,
+                MembershipEvent.createAddDevice(
+                    groupId = profile.groupId,
+                    subjectDisplayName = LocalDeviceNameStore(this).load(),
+                    subjectPublicKey = identity.publicKey,
+                    signer = identity,
+                    parentEventIds = emptyList(),
+                    version = VersionVector().increment(identity.deviceId),
+                ),
+            ).getOrThrow()
+        }
+        true
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Throwable) {
+        false
+    }
+
+    private suspend fun startRuntime(
+        profile: LocalMeshProfile,
+        policy: DiscoveryPolicy,
+        discoverImmediately: Boolean,
+    ) {
+        val newRuntime = MeshRuntime(
+            context = this,
+            database = database,
+            identity = identity,
+            groupId = profile.groupId,
+            groupName = profile.groupName,
+            rendezvousIntervalMinutes = policy.intervalMinutes,
+            scheduledDiscoveryEnabled = policy.scheduledDiscoveryEnabled,
+            rendezvousWindowSeconds = policy.windowSeconds,
+            discoverImmediately = discoverImmediately,
+            appInForeground = SyncServiceController.appInForeground,
+            onEvent = { event -> serviceScope.launch { handleRuntimeEvent(event) } },
+        )
+        runtime = newRuntime
+        try {
+            newRuntime.start()
+            setStatus("Background sync ready", "Waiting for mesh discovery status")
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            runtime = null
+            newRuntime.close()
+            setStatus("Background sync unavailable", error.message ?: "Could not start the local mesh")
+        }
+    }
+
+    private fun handleRuntimeEvent(event: MeshRuntimeEvent) {
+        when (event) {
+            is MeshRuntimeEvent.DiscoveryWaiting -> setStatus(
+                "Waiting for nearby devices",
+                "Next discovery at ${formatTime(event.nextWindowAtMillis)}",
+            )
+            is MeshRuntimeEvent.DiscoveryActive -> setStatus(
+                "Looking for mesh devices",
+                event.windowEndsAtMillis?.let { "Discovery active until ${formatTime(it)}" }
+                    ?: "Discovery stays active while SyncDroid is open",
+            )
+            is MeshRuntimeEvent.SyncStarted -> {
+                activePeers[event.peerId] = event.peerName
+                peerTransferRates.remove(event.peerId)
+                showActiveSyncStatus()
+            }
+            is MeshRuntimeEvent.TransferProgress -> {
+                activePeers[event.peerId] = event.peerName
+                peerTransferRates[event.peerId] = event.bytesPerSecond
+                showActiveSyncStatus()
+            }
+            is MeshRuntimeEvent.SyncCompleted -> {
+                activePeers.remove(event.peerId)
+                peerTransferRates.remove(event.peerId)
+                SyncStatusStore(this).recordSuccessfulSync(event.folderIds)
+                if (activePeers.isEmpty()) {
+                    setStatus("Files are up to date", "Last synced with ${event.peerName} at ${formatTime(System.currentTimeMillis())}")
+                } else {
+                    showActiveSyncStatus()
+                }
+                SyncServiceController.report(syncCompleted = true)
+            }
+            is MeshRuntimeEvent.SyncFailed -> {
+                activePeers.remove(event.peerId)
+                peerTransferRates.remove(event.peerId)
+                if (activePeers.isEmpty()) {
+                    setStatus("Sync needs attention", "${event.peerName}: ${event.reason}")
+                } else {
+                    showActiveSyncStatus()
+                }
+                eventNotifications.showSyncFailed(event.peerName)
+            }
+            is MeshRuntimeEvent.ChatMessagesReceived -> {
+                eventNotifications.showChatMessages(event.count, event.authorName, event.preview)
+            }
+        }
+    }
+
+    private fun showActiveSyncStatus() {
+        val title = if (activePeers.size == 1) {
+            "Syncing with ${activePeers.values.first()}"
+        } else {
+            "Syncing with ${activePeers.size} devices"
+        }
+        val totalRate = peerTransferRates.values.sum()
+        val detail = if (totalRate > 0L) {
+            "${formatTransferRate(totalRate)} · Transferring changed files"
+        } else {
+            "Comparing files and preparing transfers"
+        }
+        setStatus(title, detail)
+    }
+
+    private fun setStatus(title: String, detail: String) {
+        statusTitle = title
+        statusDetail = detail
+        publishNotification()
+    }
+
+    private fun publishNotification() {
+        val policy = DiscoveryPolicyStore(this).load()
+        val foregroundDetail = if (
+            SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty()
+        ) "Discovery stays active while SyncDroid is open" else statusDetail
+        val foregroundTitle = if (
+            SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty()
+        ) "Looking for mesh devices" else statusTitle
+        getSystemService(android.app.NotificationManager::class.java).notify(
+            SyncServiceNotification.NOTIFICATION_ID,
+            notification.build(foregroundTitle, foregroundDetail, policy),
+        )
+        SyncServiceController.report(
+            running = true,
+            status = foregroundTitle,
+            activePeerIds = activePeers.keys.toSet(),
+        )
+    }
+
+    private fun formatTime(timeMillis: Long): String =
+        DateFormat.getTimeFormat(this).format(Date(timeMillis))
+
+    private data class RuntimeKey(
+        val groupId: String,
+        val intervalMinutes: Int,
+        val windowSeconds: Long,
+        val scheduledDiscoveryEnabled: Boolean,
+        val syncAllowed: Boolean,
+        val wifiConnected: Boolean,
+        val wifiSsid: String?,
+        val permissionGranted: Boolean,
+    )
+
+    companion object {
+        const val ACTION_REFRESH = "com.syncdroid.app.action.REFRESH_BACKGROUND_SYNC"
+        const val ACTION_CYCLE_INTERVAL = "com.syncdroid.app.action.CYCLE_DISCOVERY_INTERVAL"
+        const val ACTION_CYCLE_WINDOW = "com.syncdroid.app.action.CYCLE_DISCOVERY_WINDOW"
+    }
+}
+
+private fun <T> nextValue(current: T, values: List<T>): T {
+    val index = values.indexOf(current)
+    return values[(if (index < 0) 0 else index + 1) % values.size]
+}

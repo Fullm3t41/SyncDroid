@@ -1,0 +1,224 @@
+syntax = "proto3";
+
+package syncdroid.mesh.v1;
+
+option java_multiple_files = true;
+option java_package = "com.syncdroid.protocol.v1";
+
+// Draft live-mesh contract. Field numbers are permanent once a release uses them.
+message Envelope {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  string sender_device_id = 3;
+  bytes message_id = 4;
+
+  oneof body {
+    Hello hello = 10;
+    StateSummary state_summary = 11;
+    IndexUpdate index_update = 12;
+    BlockRequest block_request = 13;
+    BlockResponse block_response = 14;
+    Receipt receipt = 15;
+    MembershipEvent membership_event = 16;
+    FolderAnnouncement folder_announcement = 17;
+    SyncExceptionEvent sync_exception_event = 18;
+    Close close = 19;
+    WholeFileRequest whole_file_request = 20;
+    WholeFileStart whole_file_start = 21;
+    WholeFileChunk whole_file_chunk = 22;
+    WholeFileEnd whole_file_end = 23;
+    ChatMessage chat_message = 24;
+  }
+}
+
+message Hello {
+  string device_name = 1;
+  bytes public_key_spki = 2;
+  repeated Capability capabilities = 3;
+  repeated FileSystemCapability file_system_capabilities = 4;
+  string application_version = 5;
+  bytes session_id = 6;
+}
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  BLOCK_TRANSFER = 1;
+  RESUMABLE_TRANSFER = 2;
+  CONTENT_APPLIED_RECEIPTS = 3;
+  ENCRYPTED_CLOUD_OBJECTS = 4;
+  SIGNED_EXCEPTION_EVENTS = 5;
+  SIGNED_MESH_CHAT = 6;
+}
+
+enum FileSystemCapability {
+  FILE_SYSTEM_CAPABILITY_UNSPECIFIED = 0;
+  CASE_SENSITIVE_PATHS = 1;
+  POSIX_PERMISSIONS = 2;
+  SYMBOLIC_LINKS = 3;
+  ATOMIC_REPLACE = 4;
+}
+
+message StateSummary {
+  repeated FolderIndexSummary folders = 1;
+}
+
+message FolderIndexSummary {
+  string folder_id = 1;
+  fixed64 index_epoch = 2;
+  uint64 max_sequence = 3;
+  uint64 metadata_received_sequence = 4;
+  uint64 content_applied_sequence = 5;
+}
+
+message IndexUpdate {
+  string folder_id = 1;
+  fixed64 index_epoch = 2;
+  uint64 previous_sequence = 3;
+  uint64 last_sequence = 4;
+  bool full_index = 5;
+  repeated FileRecord files = 6;
+}
+
+message FileRecord {
+  string relative_path = 1;
+  string file_id = 2;
+  uint64 size_bytes = 3;
+  bytes content_sha256 = 4;
+  bytes previous_content_sha256 = 5;
+  bool deleted = 6;
+  repeated VectorCounter version = 7;
+  uint64 local_sequence = 8;
+  repeated Block blocks = 9;
+  int64 modified_at_millis = 10;
+  uint32 block_size_bytes = 11;
+}
+
+message VectorCounter {
+  string device_id = 1;
+  uint64 value = 2;
+}
+
+message Block {
+  uint64 offset = 1;
+  uint32 size = 2;
+  bytes sha256 = 3;
+  uint32 index = 4;
+}
+
+message WholeFileRequest {
+  fixed64 request_id = 1;
+  string folder_id = 2;
+  string file_id = 3;
+  string relative_path = 4;
+  bytes expected_sha256 = 5;
+}
+
+message WholeFileStart {
+  fixed64 request_id = 1;
+  uint64 size_bytes = 2;
+  int64 modified_at_millis = 3;
+}
+
+message WholeFileChunk {
+  fixed64 request_id = 1;
+  uint32 sequence = 2;
+  bytes data = 3;
+}
+
+message WholeFileEnd {
+  fixed64 request_id = 1;
+  bytes content_sha256 = 2;
+}
+
+message BlockRequest {
+  fixed64 request_id = 1;
+  string folder_id = 2;
+  string file_id = 3;
+  repeated VectorCounter version = 4;
+  uint32 block_index = 5;
+  bytes expected_sha256 = 6;
+}
+
+message BlockResponse {
+  fixed64 request_id = 1;
+  uint32 block_index = 2;
+  bytes data = 3;
+  BlockResponseStatus status = 4;
+}
+
+enum BlockResponseStatus {
+  BLOCK_RESPONSE_STATUS_UNSPECIFIED = 0;
+  OK = 1;
+  NOT_FOUND = 2;
+  HASH_MISMATCH = 3;
+  NOT_AUTHORIZED = 4;
+}
+
+message Receipt {
+  string folder_id = 1;
+  fixed64 index_epoch = 2;
+  uint64 sequence = 3;
+  ReceiptKind kind = 4;
+}
+
+enum ReceiptKind {
+  RECEIPT_KIND_UNSPECIFIED = 0;
+  METADATA_STORED = 1;
+  CONTENT_APPLIED = 2;
+}
+
+message MembershipEvent {
+  string event_id = 1;
+  string group_id = 2;
+  string event_type = 3;
+  string subject_device_id = 4;
+  string subject_display_name = 5;
+  bytes subject_public_key_spki = 6;
+  string signer_device_id = 7;
+  repeated string parent_event_ids = 8;
+  repeated VectorCounter version = 9;
+  int64 created_at_millis = 10;
+  bytes signature_der = 11;
+  uint32 canonical_format = 12;
+}
+
+message FolderAnnouncement {
+  string event_id = 1;
+  string group_id = 2;
+  string folder_id = 3;
+  string display_name = 4;
+  repeated string include_patterns = 5;
+  repeated string exclude_patterns = 6;
+  string signer_device_id = 7;
+  repeated VectorCounter version = 8;
+  int64 created_at_millis = 9;
+  bytes signature_der = 10;
+  uint32 canonical_format = 11;
+}
+
+message SyncExceptionEvent {
+  string event_id = 1;
+  string group_id = 2;
+  string folder_id = 3;
+  string relative_path = 4;
+  bool active = 5;
+  string signer_device_id = 6;
+  repeated VectorCounter version = 7;
+  int64 created_at_millis = 8;
+  bytes signature_der = 9;
+  uint32 canonical_format = 10;
+}
+
+message ChatMessage {
+  string message_id = 1;
+  string group_id = 2;
+  string author_device_id = 3;
+  string body = 4;
+  int64 created_at_millis = 5;
+  bytes signature_der = 6;
+  uint32 canonical_format = 7;
+}
+
+message Close {
+  string reason = 1;
+}
