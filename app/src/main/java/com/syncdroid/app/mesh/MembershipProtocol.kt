@@ -10,7 +10,7 @@ import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
 
-enum class MembershipEventType { AddDevice, UpdateDeviceName }
+enum class MembershipEventType { AddDevice, UpdateDeviceName, RemoveDevice }
 
 data class MembershipEvent(
     val eventId: String,
@@ -86,6 +86,25 @@ data class MembershipEvent(
             MembershipEventType.UpdateDeviceName,
             subjectDisplayName,
             signer.publicKey,
+            signer,
+            parentEventIds,
+            version,
+            createdAtMillis,
+        )
+
+        fun createRemoveDevice(
+            groupId: String,
+            subjectDisplayName: String,
+            subjectPublicKey: PublicKey,
+            signer: DeviceSigner,
+            parentEventIds: List<String>,
+            version: VersionVector,
+            createdAtMillis: Long = System.currentTimeMillis(),
+        ): MembershipEvent = createDeviceEvent(
+            groupId,
+            MembershipEventType.RemoveDevice,
+            subjectDisplayName,
+            subjectPublicKey,
             signer,
             parentEventIds,
             version,

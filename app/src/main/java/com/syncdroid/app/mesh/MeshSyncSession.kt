@@ -67,7 +67,7 @@ class MeshSyncSession(
         val receivedKeys = receivedPlans.mapTo(mutableSetOf()) { it.planKey() }
         val pendingPlans = remoteIndexes.pendingPlans(
             remoteDeviceId,
-            syncDao.enabledFolders().map { it.folderId },
+            syncDao.enabledFolders(groupId).map { it.folderId },
         ).filterNot { it.planKey() in receivedKeys }
         val plans = (receivedPlans + pendingPlans)
             .sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
@@ -100,8 +100,8 @@ class MeshSyncSession(
     }
 
     private suspend fun scanConfiguredFolders() {
-        val folders = syncDao.enabledFolders().associateBy { it.folderId }
-        syncDao.configuredBindings(identity.deviceId).forEach { binding ->
+        val folders = syncDao.enabledFolders(groupId).associateBy { it.folderId }
+        syncDao.configuredBindings(identity.deviceId, groupId).forEach { binding ->
             val folder = folders[binding.folderId] ?: return@forEach
             val rules = SyncFilterRules(
                 includes = JSONArray(folder.includePatternsJson).strings(),
@@ -118,7 +118,7 @@ class MeshSyncSession(
     }
 
     private suspend fun buildCatalog(remoteDeviceId: String): List<FolderClock> =
-        syncDao.enabledFolders().mapNotNull { folder ->
+        syncDao.enabledFolders(groupId).mapNotNull { folder ->
             val local = syncDao.folderIndexState(folder.folderId, identity.deviceId) ?: return@mapNotNull null
             val knownPeer = syncDao.folderIndexState(folder.folderId, remoteDeviceId)
             FolderClock(
@@ -133,7 +133,7 @@ class MeshSyncSession(
 
     private suspend fun buildUpdatesForPeer(remoteCatalog: List<FolderClock>): List<FolderIndexUpdate> {
         val peerByFolder = remoteCatalog.associateBy(FolderClock::folderId)
-        return syncDao.enabledFolders().mapNotNull { folder ->
+        return syncDao.enabledFolders(groupId).mapNotNull { folder ->
             val local = syncDao.folderIndexState(folder.folderId, identity.deviceId) ?: return@mapNotNull null
             val peer = peerByFolder[folder.folderId]
             val full = peer == null || peer.knownPeerIndexEpoch != local.indexEpoch ||

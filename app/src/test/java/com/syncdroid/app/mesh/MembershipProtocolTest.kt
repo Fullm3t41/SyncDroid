@@ -54,6 +54,42 @@ class MembershipProtocolTest {
         assertFalse(event.copy(subjectDisplayName = "Changed").verifySignature(device.publicKey))
     }
 
+    @Test fun trustedDeviceCanCreateSignedRemovalForAnotherMember() {
+        val remover = TestSigner(keyPair())
+        val removed = keyPair()
+        val event = MembershipEvent.createRemoveDevice(
+            groupId = "group_1",
+            subjectDisplayName = "Old tablet",
+            subjectPublicKey = removed.public,
+            signer = remover,
+            parentEventIds = listOf("membership-head"),
+            version = VersionVector(mapOf(remover.deviceId to 3)),
+            createdAtMillis = 6789,
+        )
+
+        assertTrue(event.eventType == MembershipEventType.RemoveDevice)
+        assertTrue(event.subjectDeviceId == deviceIdFor(removed.public))
+        assertTrue(event.hasValidEventId())
+        assertTrue(event.verifySignature(remover.publicKey))
+        assertFalse(event.copy(subjectDisplayName = "Different device").verifySignature(remover.publicKey))
+    }
+
+    @Test fun deviceCanSignItsOwnLeaveEvent() {
+        val device = TestSigner(keyPair())
+        val event = MembershipEvent.createRemoveDevice(
+            "group_1",
+            "Leaving phone",
+            device.publicKey,
+            device,
+            emptyList(),
+            VersionVector(mapOf(device.deviceId to 4)),
+            7890,
+        )
+
+        assertTrue(event.subjectDeviceId == event.signerDeviceId)
+        assertTrue(event.verifySignature(device.publicKey))
+    }
+
     private fun keyPair(): KeyPair = KeyPairGenerator.getInstance("EC").run {
         initialize(ECGenParameterSpec("secp256r1"))
         generateKeyPair()

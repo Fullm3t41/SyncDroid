@@ -427,6 +427,8 @@ data class ConflictEntity(
     val state: String,
     val createdAtMillis: Long,
     val resolvedAtMillis: Long?,
+    @ColumnInfo(defaultValue = "NULL")
+    val renamedRelativePath: String? = null,
 )
 
 @Entity(tableName = "activity_events", primaryKeys = ["eventId"], indices = [Index("createdAtMillis")])

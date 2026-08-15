@@ -19,6 +19,11 @@ import android.widget.EditText
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -37,6 +42,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -53,6 +59,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Info
@@ -63,6 +70,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -77,12 +85,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -93,6 +103,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -117,6 +128,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.widget.doAfterTextChanged
 import com.syncdroid.app.model.PeerDevice
+import com.syncdroid.app.BuildConfig
 import com.syncdroid.app.model.SaveStatus
 import com.syncdroid.app.model.SaveFolder
 import com.syncdroid.app.data.SyncDroidDatabase
@@ -133,11 +145,14 @@ import com.syncdroid.app.mesh.MembershipEvent
 import com.syncdroid.app.mesh.MeshFolderRepository
 import com.syncdroid.app.mesh.MeshChatRepository
 import com.syncdroid.app.mesh.MeshMembershipRepository
+import com.syncdroid.app.mesh.MeshNsdDiscovery
+import com.syncdroid.app.mesh.MeshWifiPresence
 import com.syncdroid.app.mesh.PairingCodeOffer
 import com.syncdroid.app.mesh.PairingCodes
 import com.syncdroid.app.mesh.PairingCoordinator
 import com.syncdroid.app.mesh.PairingAttemptLimiter
 import com.syncdroid.app.mesh.defaultDeviceName
+import com.syncdroid.app.mesh.decodePublicKey
 import com.syncdroid.app.notifications.SyncNotificationCenter
 import com.syncdroid.app.service.SyncServiceController
 import com.syncdroid.app.scheduling.alignedDiscoveryWindows
@@ -156,11 +171,13 @@ import com.syncdroid.app.wifi.WifiSyncPolicyStore
 import com.syncdroid.app.wifi.hasWifiRuntimePermission
 import com.syncdroid.app.wifi.requiredWifiRuntimePermissions
 import com.syncdroid.app.wifi.rememberWifiConnectionState
-import java.time.LocalTime
+import java.time.LocalDateTime
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.syncdroid.app.sync.VersionVector
+import com.syncdroid.app.sync.ConflictResolutionRepository
+import com.syncdroid.app.sync.ConflictVersionDetails
 import com.syncdroid.app.sync.FolderDeletionPolicy
 import com.syncdroid.app.sync.FolderExceptionRepository
 import com.syncdroid.app.sync.SyncStatusStore
@@ -171,6 +188,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import androidx.core.view.WindowCompat
 
@@ -181,6 +201,8 @@ private enum class MainTab(val label: String, val icon: ImageVector) {
     Chat("Chat", Icons.Rounded.ChatBubbleOutline),
     Settings("Settings", Icons.Rounded.Settings),
 }
+
+private enum class ConflictReviewAction { KeepLocal, KeepRemote, KeepBoth }
 
 @Composable
 fun SyncDroidApp() {
@@ -207,6 +229,13 @@ fun SyncDroidApp() {
     var folderBeingConfiguredId by rememberSaveable { mutableStateOf<String?>(null) }
     var showRenameDevice by rememberSaveable { mutableStateOf(false) }
     var renameDeviceDraft by rememberSaveable { mutableStateOf("") }
+    var leavingMesh by remember { mutableStateOf(false) }
+    var dismissedWifiSuggestionSsid by rememberSaveable { mutableStateOf<String?>(null) }
+    var observedWifiSuggestionSsid by rememberSaveable { mutableStateOf<String?>(null) }
+    var showConflictReview by rememberSaveable { mutableStateOf(false) }
+    var conflictReviewFolderId by rememberSaveable { mutableStateOf<String?>(null) }
+    var conflictResolutionError by remember { mutableStateOf<String?>(null) }
+    var resolvingConflict by remember { mutableStateOf(false) }
     val folderStore = remember(context) { FolderConfigurationStore(context) }
     val database = remember(context) { SyncDroidDatabase.get(context) }
     val identity = remember { AndroidDeviceIdentity() }
@@ -216,6 +245,7 @@ fun SyncDroidApp() {
     val notifications = remember(context) { SyncNotificationCenter(context) }
     val syncStatusStore = remember(context) { SyncStatusStore(context) }
     val syncServiceSnapshot by SyncServiceController.snapshot.collectAsState()
+    val appInForeground by SyncServiceController.appInForeground.collectAsState()
     val activeSyncPeerIds = syncServiceSnapshot.activePeerIds
     val lastSuccessfulSyncMillis = remember(syncStatusStore, syncServiceSnapshot.syncRevision) {
         syncStatusStore.lastSuccessfulSyncMillis()
@@ -235,10 +265,13 @@ fun SyncDroidApp() {
     val folderExceptions = remember(database, identity.deviceId) {
         FolderExceptionRepository(database, identity)
     }
+    val conflictResolutions = remember(context, database, identity.deviceId) {
+        ConflictResolutionRepository(context, database, identity.deviceId)
+    }
     val meshChat = remember(database, identity.deviceId) { MeshChatRepository(database, identity) }
     val scope = rememberCoroutineScope()
-    val localFolderViews by remember(database, identity.deviceId) {
-        database.syncDao().observeLocalFolderViews(identity.deviceId)
+    val localFolderViews by remember(database, identity.deviceId, meshProfile.groupId) {
+        database.syncDao().observeLocalFolderViews(identity.deviceId, meshProfile.groupId)
     }.collectAsState(initial = emptyList())
     val meshDevices by remember(database, meshProfile.groupId) {
         database.meshDao().observeDevices(meshProfile.groupId)
@@ -249,6 +282,16 @@ fun SyncDroidApp() {
     val unresolvedConflicts by remember(database) {
         database.syncDao().observeUnresolvedConflicts()
     }.collectAsState(initial = emptyList())
+    val conflictsBeingReviewed = unresolvedConflicts.filter {
+        conflictReviewFolderId == null || it.folderId == conflictReviewFolderId
+    }
+    val activeConflict = conflictsBeingReviewed.firstOrNull()
+    val activeConflictDetails by produceState<ConflictVersionDetails?>(
+        initialValue = null,
+        activeConflict?.conflictId,
+    ) {
+        value = activeConflict?.let { conflictResolutions.details(it) }
+    }
     val activeSyncExceptions by remember(database) {
         database.syncDao().observeAllActiveExceptions()
     }.collectAsState(initial = emptyList())
@@ -269,7 +312,11 @@ fun SyncDroidApp() {
     val wifiPolicy = remember(wifiPolicyStore, wifiPolicyRevision) { wifiPolicyStore.load() }
     val wifiPermissionGranted = remember(wifiPermissionRevision) { hasWifiRuntimePermission(context) }
     val wifiConnection = rememberWifiConnectionState(wifiPolicyRevision + wifiPermissionRevision)
-    val syncAllowed = wifiPermissionGranted && wifiPolicy.allowsSync(wifiConnection.isWifiConnected, wifiConnection.ssid)
+    val syncAllowed = wifiPermissionGranted && wifiPolicy.allowsSyncWithForegroundOverride(
+        isWifiConnected = wifiConnection.isWifiConnected,
+        currentSsid = wifiConnection.ssid,
+        appInForeground = appInForeground,
+    )
     val legacySaves = remember(folderStore) {
         folderStore.load().map { configuration ->
                 SaveFolder(
@@ -296,12 +343,14 @@ fun SyncDroidApp() {
             level = 0,
             updatedOn = when {
                 folder.bindingState == LocalFolderBindingState.PENDING_CONFIGURATION.name -> "Needs a local folder"
+                folder.bindingState == LocalFolderBindingState.DECLINED.name -> "Declined on this device"
                 activeSyncPeerIds.isNotEmpty() -> "Sync in progress"
                 else -> detailedSyncTimestamp(lastFolderSync)
             },
             copies = 1,
             status = when {
                 folder.bindingState == LocalFolderBindingState.PENDING_CONFIGURATION.name -> SaveStatus.Configure
+                folder.bindingState == LocalFolderBindingState.DECLINED.name -> SaveStatus.Declined
                 hasConflict -> SaveStatus.Conflict
                 activeSyncPeerIds.isNotEmpty() -> SaveStatus.Syncing
                 else -> SaveStatus.Synced
@@ -315,10 +364,11 @@ fun SyncDroidApp() {
     }
     val configuredSaves = legacySaves + meshSaves
     val peerDevices = meshDevices
-        .filter { it.deviceId != identity.deviceId }
+        .filter { it.deviceId != identity.deviceId && it.trustState == "TRUSTED" }
         .map { device ->
             val online = device.lastSeenAtMillis?.let { System.currentTimeMillis() - it < ONLINE_WINDOW_MILLIS } == true
             PeerDevice(
+                deviceId = device.deviceId,
                 name = device.displayName,
                 detail = if (online) "Online" else device.lastSeenAtMillis?.let { "Previously connected" } ?: "Not currently online",
                 online = online,
@@ -326,6 +376,59 @@ fun SyncDroidApp() {
                 lastOnlineAtMillis = device.lastSeenAtMillis,
             )
         }
+    val currentWifiSsid = wifiConnection.ssid.takeIf { wifiConnection.isWifiConnected }
+    val wifiAlreadyApproved = wifiPolicy.allowsSync(wifiConnection.isWifiConnected, currentWifiSsid)
+    val nearbyPresencePeerIds by produceState(
+        initialValue = emptySet(),
+        appInForeground,
+        wifiConnection.isWifiConnected,
+        currentWifiSsid,
+        wifiAlreadyApproved,
+        meshProfile.groupId,
+        identity.deviceId,
+    ) {
+        if (!appInForeground || !wifiConnection.isWifiConnected || currentWifiSsid == null || wifiAlreadyApproved) {
+            value = emptySet()
+            return@produceState
+        }
+        val presence = MeshWifiPresence(context, identity.deviceId, meshProfile.groupId)
+        val regularMeshBrowser = MeshNsdDiscovery(context, identity.deviceId, advertise = false)
+        try {
+            presence.start()
+            regularMeshBrowser.start()
+        } catch (_: Throwable) {
+            presence.close()
+            regularMeshBrowser.close()
+            value = emptySet()
+            return@produceState
+        }
+        try {
+            combine(presence.peerIds, regularMeshBrowser.peers) { presenceIds, regularPeers ->
+                presenceIds + regularPeers.keys
+            }.collect { value = it }
+        } finally {
+            presence.close()
+            regularMeshBrowser.close()
+        }
+    }
+    val trustedDeviceIds = meshDevices
+        .asSequence()
+        .filter { it.deviceId != identity.deviceId && it.trustState == "TRUSTED" }
+        .map { it.deviceId }
+        .toSet()
+    val sameMeshPeerPresent = nearbyPresencePeerIds.any(trustedDeviceIds::contains)
+    val showWifiSuggestion = appInForeground &&
+        currentWifiSsid != null &&
+        !wifiAlreadyApproved &&
+        sameMeshPeerPresent &&
+        dismissedWifiSuggestionSsid != currentWifiSsid
+
+    LaunchedEffect(wifiConnection.isWifiConnected, currentWifiSsid) {
+        if (currentWifiSsid != observedWifiSuggestionSsid) {
+            observedWifiSuggestionSsid = currentWifiSsid
+            dismissedWifiSuggestionSsid = null
+        }
+    }
 
     suspend fun ensureLocalMembership() {
         val existing = database.meshDao().getDevice(meshProfile.groupId, identity.deviceId)
@@ -458,6 +561,65 @@ fun SyncDroidApp() {
         }
     }
 
+    suspend fun recordDeviceRemoval(deviceId: String) {
+        check(ensureLocalMembershipSafely()) { meshIdentityError ?: "Could not verify this mesh identity" }
+        val target = requireNotNull(database.meshDao().getDevice(meshProfile.groupId, deviceId)) {
+            "Device is no longer part of this mesh"
+        }
+        require(target.trustState == "TRUSTED") { "Device is no longer part of this mesh" }
+        val parents = database.meshDao().membershipEvents(meshProfile.groupId)
+        val version = parents.fold(VersionVector()) { merged, event ->
+            merged.merge(VersionVector.fromJson(event.versionVectorJson))
+        }.increment(identity.deviceId)
+        meshMembership.apply(
+            meshProfile.groupName,
+            MembershipEvent.createRemoveDevice(
+                groupId = meshProfile.groupId,
+                subjectDisplayName = target.displayName,
+                subjectPublicKey = decodePublicKey(target.publicKeyBase64),
+                signer = identity,
+                parentEventIds = parents.map { it.eventId },
+                version = version,
+            ),
+        ).getOrThrow()
+    }
+
+    fun removeMeshDevice(deviceId: String) {
+        scope.launch {
+            runCatching { recordDeviceRemoval(deviceId) }
+                .onSuccess { SyncServiceController.requestRefresh(context) }
+                .onFailure { error ->
+                    meshIdentityError = error.message ?: "Could not remove this device from the mesh."
+                }
+        }
+    }
+
+    fun leaveCurrentMesh() {
+        if (leavingMesh) return
+        leavingMesh = true
+        scope.launch {
+            try {
+                val previousSyncRevision = SyncServiceController.snapshot.value.syncRevision
+                val hasOnlinePeer = peerDevices.any(PeerDevice::online)
+                recordDeviceRemoval(identity.deviceId)
+                SyncServiceController.requestRefresh(context)
+                if (hasOnlinePeer) {
+                    withTimeoutOrNull(LEAVE_MESH_ANNOUNCEMENT_TIMEOUT_MILLIS) {
+                        SyncServiceController.snapshot.first { it.syncRevision > previousSyncRevision }
+                    }
+                }
+                meshProfileStore.createNew("My mesh")
+                meshProfileRevision++
+                SyncServiceController.requestRefresh(context)
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                meshIdentityError = error.message ?: "Could not leave the mesh."
+            } finally {
+                leavingMesh = false
+            }
+        }
+    }
+
     val systemFolderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             runCatching {
@@ -514,6 +676,55 @@ fun SyncDroidApp() {
         }
     }
 
+    fun declineFolder(save: SaveFolder) {
+        scope.launch {
+            meshFolders.declineLocalFolder(save.meshFolderId)
+        }
+    }
+
+    fun acceptWifiSuggestion() {
+        val ssid = currentWifiSsid ?: return
+        wifiPolicyStore.save(wifiPolicy.withNetworkEnabled(ssid))
+        dismissedWifiSuggestionSsid = ssid
+        wifiPolicyRevision++
+        SyncServiceController.requestRefresh(context)
+    }
+
+    fun openConflictReview(folderId: String? = null) {
+        conflictReviewFolderId = folderId
+        conflictResolutionError = null
+        showConflictReview = true
+    }
+
+    fun resolveActiveConflict(action: ConflictReviewAction) {
+        val details = activeConflictDetails ?: return
+        if (resolvingConflict) return
+        resolvingConflict = true
+        conflictResolutionError = null
+        scope.launch {
+            try {
+                when (action) {
+                    ConflictReviewAction.KeepLocal -> conflictResolutions.keepLocal(details)
+                    ConflictReviewAction.KeepRemote -> conflictResolutions.keepRemote(details)
+                    ConflictReviewAction.KeepBoth -> conflictResolutions.keepBoth(details)
+                }
+                SyncServiceController.requestRefresh(context)
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                conflictResolutionError = error.message ?: "The conflict could not be resolved."
+            } finally {
+                resolvingConflict = false
+            }
+        }
+    }
+
+    LaunchedEffect(showConflictReview, activeConflict?.conflictId) {
+        if (showConflictReview && activeConflict == null) {
+            showConflictReview = false
+            conflictReviewFolderId = null
+        }
+    }
+
     SyncDroidTheme(darkTheme = darkTheme) {
         SideEffect {
             val activity = context as? Activity ?: return@SideEffect
@@ -526,9 +737,10 @@ fun SyncDroidApp() {
                 isAppearanceLightNavigationBars = !darkTheme
             }
         }
-        Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
-            bottomBar = {
+        Box(Modifier.fillMaxSize()) {
+            Scaffold(
+                containerColor = MaterialTheme.colorScheme.background,
+                bottomBar = {
                 if (!showPowerSettings && !showWifiRules && !showCloudSettings && !showPairing && folderSettingsId == null && openFolderContentsId == null && !showFileManager && pendingSystemUri == null) {
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                         MainTab.entries.forEach { tab ->
@@ -541,8 +753,8 @@ fun SyncDroidApp() {
                         }
                     }
                 }
-            },
-        ) { scaffoldPadding ->
+                },
+            ) { scaffoldPadding ->
             if (showPowerSettings) {
                 PowerSettingsScreen(
                     modifier = Modifier.padding(scaffoldPadding),
@@ -586,7 +798,9 @@ fun SyncDroidApp() {
                     offer = pairingOffer,
                     status = pairingStatus,
                     currentMeshName = meshProfile.groupName,
-                    canStartNewMesh = meshDevices.none { it.deviceId != identity.deviceId } &&
+                    canStartNewMesh = meshDevices.none {
+                        it.deviceId != identity.deviceId && it.trustState == "TRUSTED"
+                    } &&
                         localFolderViews.isEmpty(),
                     joinAttemptsRemaining = pairingAttemptState.attemptsRemaining(System.currentTimeMillis()),
                     joinLockedUntilMillis = pairingAttemptState.lockedUntilMillis,
@@ -712,6 +926,7 @@ fun SyncDroidApp() {
                         peers = peerDevices,
                         folders = configuredSaves,
                         reviewCount = unresolvedConflicts.size,
+                        onReviewConflicts = { openConflictReview() },
                         onRenameCurrentDevice = {
                             renameDeviceDraft = localDeviceName
                             showRenameDevice = true
@@ -724,6 +939,7 @@ fun SyncDroidApp() {
                         onAddFolder = ::beginAddFolder,
                         onCreateFolderFor = { beginConfigureFolder(it, createNew = true) },
                         onChooseFolderFor = { beginConfigureFolder(it, createNew = false) },
+                        onDeclineFolder = ::declineFolder,
                         cloudPolicy = cloudPolicy,
                         onCloudFolderChanged = { folderId, enabled ->
                             cloudPolicyStore.setFolderEnabled(folderId, enabled)
@@ -731,6 +947,7 @@ fun SyncDroidApp() {
                         },
                         onOpenFolderSettings = { folderSettingsId = it.meshFolderId },
                         onOpenFolder = { openFolderContentsId = it.meshFolderId },
+                        onReviewConflicts = { openConflictReview(it.meshFolderId) },
                         modifier = Modifier.padding(scaffoldPadding),
                     )
                     MainTab.Devices -> DevicesScreen(
@@ -740,6 +957,9 @@ fun SyncDroidApp() {
                             pairingOffer = PairingCodes.create()
                             showPairing = true
                         },
+                        onRemoveDevice = ::removeMeshDevice,
+                        onLeaveMesh = ::leaveCurrentMesh,
+                        leavingMesh = leavingMesh,
                         modifier = Modifier.padding(scaffoldPadding),
                     )
                     MainTab.Chat -> ChatScreen(
@@ -763,6 +983,22 @@ fun SyncDroidApp() {
                         modifier = Modifier.padding(scaffoldPadding),
                     )
                 }
+            }
+            }
+            AnimatedVisibility(
+                visible = showWifiSuggestion,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            ) {
+                WifiNetworkSuggestionBanner(
+                    ssid = currentWifiSsid.orEmpty(),
+                    onYes = ::acceptWifiSuggestion,
+                    onNo = { dismissedWifiSuggestionSsid = currentWifiSsid },
+                )
             }
         }
 
@@ -813,6 +1049,193 @@ fun SyncDroidApp() {
                     TextButton(onClick = { showRenameDevice = false }) { Text("Cancel") }
                 },
             )
+        }
+        if (showConflictReview && activeConflict != null) {
+            ConflictReviewDialog(
+                details = activeConflictDetails,
+                remainingCount = conflictsBeingReviewed.size,
+                localDeviceName = localDeviceName,
+                deviceNames = meshDevices.associate { it.deviceId to it.displayName },
+                resolving = resolvingConflict,
+                error = conflictResolutionError,
+                onKeepLocal = { resolveActiveConflict(ConflictReviewAction.KeepLocal) },
+                onKeepRemote = { resolveActiveConflict(ConflictReviewAction.KeepRemote) },
+                onKeepBoth = { resolveActiveConflict(ConflictReviewAction.KeepBoth) },
+                onDismiss = {
+                    if (!resolvingConflict) {
+                        showConflictReview = false
+                        conflictReviewFolderId = null
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConflictReviewDialog(
+    details: ConflictVersionDetails?,
+    remainingCount: Int,
+    localDeviceName: String,
+    deviceNames: Map<String, String>,
+    resolving: Boolean,
+    error: String?,
+    onKeepLocal: () -> Unit,
+    onKeepRemote: () -> Unit,
+    onKeepBoth: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val remoteDeviceName = details?.remote?.let { remote ->
+        deviceNames[remote.deviceId] ?: remote.deviceId.take(8)
+    }.orEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("Review file conflict")
+                Text(
+                    "$remainingCount ${if (remainingCount == 1) "conflict" else "conflicts"} remaining",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        text = {
+            if (details == null) {
+                Text("Loading both versions…")
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        details.local.relativePath,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    ConflictVersionCard(
+                        title = "On $localDeviceName",
+                        editorName = deviceNames[details.local.originDeviceId]
+                            ?: details.local.originDeviceId.take(8),
+                        sizeBytes = details.local.sizeBytes,
+                        modifiedAtMillis = details.local.modifiedAtMillis,
+                        sha256 = details.local.contentSha256,
+                        deleted = details.local.deleted,
+                    )
+                    ConflictVersionCard(
+                        title = "From $remoteDeviceName",
+                        editorName = deviceNames[details.remote.originDeviceId]
+                            ?: details.remote.originDeviceId.ifBlank { details.remote.deviceId }.take(8),
+                        sizeBytes = details.remote.sizeBytes,
+                        modifiedAtMillis = details.remote.modifiedAtMillis,
+                        sha256 = details.remote.contentSha256,
+                        deleted = details.remote.deleted,
+                    )
+                    Text(
+                        "Keep both preserves this device's copy as ${details.suggestedRenamedPath}. The selected remote copy returns to the original filename when that device is available.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (error != null) {
+                        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = onKeepLocal,
+                    enabled = details != null && !resolving,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Keep this device's version") }
+                OutlinedButton(
+                    onClick = onKeepRemote,
+                    enabled = details != null && !resolving,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (remoteDeviceName.isEmpty()) "Keep other version" else "Keep $remoteDeviceName version") }
+                OutlinedButton(
+                    onClick = onKeepBoth,
+                    enabled = details?.local?.deleted == false && !resolving,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (resolving) "Resolving…" else "Keep both") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !resolving) { Text("Review later") }
+        },
+    )
+}
+
+@Composable
+private fun ConflictVersionCard(
+    title: String,
+    editorName: String,
+    sizeBytes: Long,
+    modifiedAtMillis: Long,
+    sha256: String,
+    deleted: Boolean,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (deleted) "Deleted version" else "${formatConflictFileSize(sizeBytes)} · edited ${formatChatTime(modifiedAtMillis)}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Last edited by ${editorName.ifBlank { "Unknown device" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (sha256.isNotBlank()) {
+                Text(
+                    "Hash ${sha256.take(12)}…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun formatConflictFileSize(bytes: Long): String = when {
+    bytes < 1_024 -> "$bytes B"
+    bytes < 1_024 * 1_024 -> "%.1f KB".format(Locale.getDefault(), bytes / 1_024.0)
+    bytes < 1_024L * 1_024 * 1_024 -> "%.1f MB".format(Locale.getDefault(), bytes / (1_024.0 * 1_024))
+    else -> "%.1f GB".format(Locale.getDefault(), bytes / (1_024.0 * 1_024 * 1_024))
+}
+
+@Composable
+private fun WifiNetworkSuggestionBanner(
+    ssid: String,
+    onYes: () -> Unit,
+    onNo: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp,
+        shadowElevation = 10.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 18.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Add this Wi-Fi network?", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    ssid,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onNo) { Text("No") }
+            TextButton(onClick = onYes) { Text("Yes") }
         }
     }
 }
@@ -1060,6 +1483,7 @@ private fun SyncScreen(
     peers: List<PeerDevice>,
     folders: List<SaveFolder>,
     reviewCount: Int,
+    onReviewConflicts: () -> Unit,
     onRenameCurrentDevice: () -> Unit,
     onSyncNow: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1095,7 +1519,13 @@ private fun SyncScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MetricCard(peers.count { it.online }.toString(), "online", Modifier.weight(1f))
                 MetricCard(folders.size.toString(), "folders", Modifier.weight(1f))
-                MetricCard(reviewCount.toString(), "needs review", Modifier.weight(1f), alert = reviewCount > 0)
+                MetricCard(
+                    reviewCount.toString(),
+                    "needs review",
+                    Modifier.weight(1f),
+                    alert = reviewCount > 0,
+                    onClick = onReviewConflicts.takeIf { reviewCount > 0 },
+                )
             }
         }
         if (folders.isEmpty()) {
@@ -1105,7 +1535,9 @@ private fun SyncScreen(
                 SectionLabel("ACTIVE FOLDERS")
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    folders.filter { it.status != SaveStatus.Configure }.forEach { folder ->
+                    folders.filter {
+                        it.status != SaveStatus.Configure && it.status != SaveStatus.Declined
+                    }.forEach { folder ->
                         Surface(
                             color = MaterialTheme.colorScheme.surface,
                             shape = RoundedCornerShape(15.dp),
@@ -1169,9 +1601,15 @@ private fun LocalMeshHeader(syncAllowed: Boolean, wifiGateEnabled: Boolean, curr
 }
 
 @Composable
-private fun MetricCard(value: String, label: String, modifier: Modifier = Modifier, alert: Boolean = false) {
+private fun MetricCard(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    alert: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
     Card(
-        modifier = modifier,
+        modifier = if (onClick == null) modifier else modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (alert) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,
@@ -1198,10 +1636,12 @@ private fun FoldersScreen(
     onAddFolder: () -> Unit,
     onCreateFolderFor: (SaveFolder) -> Unit = {},
     onChooseFolderFor: (SaveFolder) -> Unit = {},
+    onDeclineFolder: (SaveFolder) -> Unit = {},
     cloudPolicy: CloudSyncPolicy,
     onCloudFolderChanged: (String, Boolean) -> Unit,
     onOpenFolder: (SaveFolder) -> Unit,
     onOpenFolderSettings: (SaveFolder) -> Unit,
+    onReviewConflicts: (SaveFolder) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
@@ -1233,6 +1673,7 @@ private fun FoldersScreen(
                 onToggle = { expanded[save.meshFolderId] = expanded[save.meshFolderId] != true },
                 onCreateNewFolder = { onCreateFolderFor(save) },
                 onChooseExistingFolder = { onChooseFolderFor(save) },
+                onDeclineFolder = { onDeclineFolder(save) },
                 cloudEnabled = cloudPolicy.isEnabledFor(save.meshFolderId),
                 cloudEditable = cloudPolicy.scope == CloudSyncScope.SELECTED_FOLDERS,
                 cloudDetail = when (cloudPolicy.scope) {
@@ -1247,6 +1688,7 @@ private fun FoldersScreen(
                 onCloudEnabledChange = { onCloudFolderChanged(save.meshFolderId, it) },
                 onOpenFolder = { onOpenFolder(save) },
                 onOpenFolderSettings = { onOpenFolderSettings(save) },
+                onReviewConflicts = { onReviewConflicts(save) },
             )
         }
         if (folders.isEmpty()) {
@@ -1365,8 +1807,13 @@ private fun DevicesScreen(
     localDeviceName: String,
     devices: List<PeerDevice>,
     onPairDevice: () -> Unit,
+    onRemoveDevice: (String) -> Unit,
+    onLeaveMesh: () -> Unit,
+    leavingMesh: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    var devicePendingRemoval by remember { mutableStateOf<PeerDevice?>(null) }
+    var showLeaveConfirmation by rememberSaveable { mutableStateOf(false) }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
@@ -1387,10 +1834,120 @@ private fun DevicesScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        item { LocalMesh(localDeviceName, devices.filter { it.online }) }
-        items(devices, key = { it.name }) { device -> DeviceRow(device) }
+        item {
+            LocalMesh(
+                currentDevice = localDeviceName,
+                peers = devices,
+            )
+        }
+        items(devices, key = PeerDevice::deviceId) { device ->
+            SwipeableDeviceRow(
+                device = device,
+                onDelete = { devicePendingRemoval = device },
+            )
+        }
         if (devices.isEmpty()) item { EmptyStateCard("No paired devices", "Use a six-digit code from a device already in the mesh.") }
+        item {
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { showLeaveConfirmation = true },
+                enabled = !leavingMesh,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (leavingMesh) "Leaving mesh…" else "Leave mesh")
+            }
+            Text(
+                "Leaving removes this device from the shared mesh. Your local files are not deleted.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
     }
+
+    devicePendingRemoval?.let { device ->
+        AlertDialog(
+            onDismissRequest = { devicePendingRemoval = null },
+            title = { Text("Remove ${device.name}?") },
+            text = {
+                Text(
+                    "This signed removal will sync to the other devices. ${device.name} will no longer be able to join this mesh.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRemoveDevice(device.deviceId)
+                        devicePendingRemoval = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { devicePendingRemoval = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showLeaveConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showLeaveConfirmation = false },
+            title = { Text("Leave this mesh?") },
+            text = {
+                Text(
+                    "SyncDroid will try to announce that this device has left, then move it to a new private mesh. Other devices and your local files will not be deleted.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showLeaveConfirmation = false
+                        onLeaveMesh()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Leave mesh") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveConfirmation = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableDeviceRow(
+    device: PeerDevice,
+    onDelete: () -> Unit,
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        positionalThreshold = { distance -> distance * 0.35f },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.error, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 18.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                TextButton(
+                    onClick = onDelete,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onError),
+                ) {
+                    Icon(Icons.Rounded.Delete, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Delete")
+                }
+            }
+        },
+        content = { DeviceRow(device) },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1758,7 +2315,7 @@ private fun SettingsScreen(
                 SettingsActionRow(
                     icon = Icons.Rounded.Info,
                     title = "About SyncDroid",
-                    detail = "Local-first · prototype 0.1.0",
+                    detail = "Local-first · version ${BuildConfig.VERSION_NAME}",
                     onClick = {},
                 )
             }
@@ -1894,12 +2451,24 @@ private fun PowerSettingsScreen(
     } else {
         "${discoveryPolicy.windowSeconds / 60} minutes"
     }
+    val scheduleNow by produceState(initialValue = LocalDateTime.now()) {
+        while (true) {
+            val now = LocalDateTime.now()
+            val millisToNextMinute = ((60 - now.second) * 1_000L - now.nano / 1_000_000L)
+                .coerceAtLeast(100L)
+            delay(millisToNextMinute)
+            value = LocalDateTime.now()
+        }
+    }
     val windows = alignedDiscoveryWindows(
-        LocalTime.now(),
+        scheduleNow,
         intervalMinutes = interval,
         windowSeconds = discoveryPolicy.windowSeconds,
         count = 3,
     )
+    val showWindowDates = interval >= 24 * 60 || windows.any {
+        it.start.toLocalDate() != scheduleNow.toLocalDate()
+    }
 
     Column(modifier.fillMaxSize()) {
         TopAppBar(
@@ -1945,18 +2514,22 @@ private fun PowerSettingsScreen(
             item {
                 SectionLabel("DISCOVERY INTERVAL")
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(5, 15, 30, 60).forEach { minutes ->
-                        IntervalButton(
-                            minutes = minutes,
-                            selected = interval == minutes,
-                            onClick = {
-                                onDiscoveryPolicyChanged(
-                                    discoveryPolicy.copy(intervalMinutes = minutes, windowSecondsOverride = null),
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DiscoveryPolicy.SUPPORTED_INTERVALS.sorted().chunked(4).forEach { intervalRow ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            intervalRow.forEach { minutes ->
+                                IntervalButton(
+                                    minutes = minutes,
+                                    selected = interval == minutes,
+                                    onClick = {
+                                        onDiscoveryPolicyChanged(
+                                            discoveryPolicy.copy(intervalMinutes = minutes, windowSecondsOverride = null),
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f),
                                 )
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
+                            }
+                        }
                     }
                 }
             }
@@ -1978,9 +2551,9 @@ private fun PowerSettingsScreen(
             }
             item {
                 SettingsCard {
-                    SettingsInfoRow(Icons.Rounded.Schedule, "Rendezvous starts", windows.first().startLabel())
+                    SettingsInfoRow(Icons.Rounded.Schedule, "Rendezvous starts", windows.first().startLabel(showWindowDates))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-                    SettingsInfoRow(Icons.Rounded.Schedule, "Following ping", windows[1].startLabel())
+                    SettingsInfoRow(Icons.Rounded.Schedule, "Following ping", windows[1].startLabel(showWindowDates))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
                     SettingsInfoRow(Icons.Rounded.Sync, "Discovery window", windowDuration)
                 }
@@ -2010,7 +2583,7 @@ private fun PowerSettingsScreen(
                                     }
                                 }
                                 Spacer(Modifier.width(11.dp))
-                                Text(window.label(), style = MaterialTheme.typography.titleMedium)
+                                Text(window.label(showWindowDates), style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.weight(1f))
                                 Text("active $windowDuration", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -2027,7 +2600,7 @@ private fun PowerSettingsScreen(
                         Icon(Icons.Rounded.Info, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(Modifier.width(11.dp))
                         Text(
-                            "Rendezvous times align to the clock on every device. Five-minute discovery defaults to a 30-second window; 15, 30 and 60 minutes default to five-minute windows. Your selected window is $windowDuration.",
+                            "Rendezvous times share a midnight-based calendar on every device. The 48-hour cadence runs on alternating midnights and the weekly cadence runs Monday at 00:00. Five-minute discovery defaults to a 30-second window; all other intervals default to five minutes. Your selected window is $windowDuration.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
@@ -2052,9 +2625,16 @@ private fun IntervalButton(minutes: Int, selected: Boolean, onClick: () -> Unit,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (selected) Icon(Icons.Rounded.Check, null, modifier = Modifier.size(15.dp))
-            Text(if (minutes == 60) "1 hr" else "$minutes min", style = MaterialTheme.typography.labelLarge)
+            Text(intervalButtonLabel(minutes), style = MaterialTheme.typography.labelLarge)
         }
     }
+}
+
+private fun intervalButtonLabel(minutes: Int): String = when {
+    minutes == 7 * 24 * 60 -> "1 wk"
+    minutes % (24 * 60) == 0 -> "${minutes / 60} hr"
+    minutes % 60 == 0 -> "${minutes / 60} hr"
+    else -> "$minutes min"
 }
 
 @Composable
@@ -2235,3 +2815,4 @@ private fun String.initials(): String = trim()
     .ifBlank { "?" }
 
 private const val ONLINE_WINDOW_MILLIS = 5 * 60 * 1000L
+private const val LEAVE_MESH_ANNOUNCEMENT_TIMEOUT_MILLIS = 30_000L

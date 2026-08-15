@@ -42,6 +42,27 @@ class MeshFolderBindingTest {
     }
 
     @Test
+    fun `replaying an announcement preserves a declined local binding`() {
+        val declined = LocalFolderBindingEntity(
+            folderId = "folder-1",
+            deviceId = "device-1",
+            localLocation = null,
+            state = LocalFolderBindingState.DECLINED.name,
+            updatedAtMillis = 100,
+        )
+
+        val update = bindingUpdateForAnnouncement(
+            folderId = "folder-1",
+            deviceId = "device-1",
+            localLocation = null,
+            existingBinding = declined,
+            updatedAtMillis = 200,
+        )
+
+        assertNull(update)
+    }
+
+    @Test
     fun `choosing a local location creates a configured binding`() {
         val update = bindingUpdateForAnnouncement(
             folderId = "folder-1",

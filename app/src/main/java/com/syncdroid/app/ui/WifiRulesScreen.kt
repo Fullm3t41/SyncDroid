@@ -2,6 +2,7 @@ package com.syncdroid.app.ui
 
 import android.Manifest
 import android.content.Intent
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -79,6 +80,7 @@ fun WifiRulesScreen(
     var permissionRefresh by remember { mutableIntStateOf(0) }
     val connection = rememberWifiConnectionState(permissionRefresh)
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
+    var showLocationServicesDialog by rememberSaveable { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         permissionRefresh++
@@ -87,6 +89,13 @@ fun WifiRulesScreen(
     val backgroundPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         permissionRefresh++
         onRulesChanged()
+    }
+    val locationSettingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        permissionRefresh++
+        onRulesChanged()
+    }
+    val locationServicesEnabled = remember(permissionRefresh) {
+        context.getSystemService(LocationManager::class.java).isLocationEnabled
     }
     val hasBackgroundNetworkIdentity = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
         context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -99,16 +108,7 @@ fun WifiRulesScreen(
     }
 
     fun addNetwork(ssid: String) {
-        val normalized = ssid.trim().removeSurrounding("\"")
-        if (normalized.isEmpty()) return
-        val existing = policy.networks.indexOfFirst { it.ssid == normalized }
-        val networks = policy.networks.toMutableList()
-        if (existing >= 0) {
-            networks[existing] = networks[existing].copy(enabled = true)
-        } else {
-            networks.add(WifiNetworkRule(normalized))
-        }
-        updatePolicy(policy.copy(networks = networks))
+        updatePolicy(policy.withNetworkEnabled(ssid))
     }
 
     Scaffold(
@@ -209,6 +209,7 @@ fun WifiRulesScreen(
                             when {
                                 !hasWifiRuntimePermission(context) -> permissionLauncher.launch(requiredWifiRuntimePermissions())
                                 connection.ssid != null -> addNetwork(connection.ssid)
+                                connection.isWifiConnected && !locationServicesEnabled -> showLocationServicesDialog = true
                                 else -> message = "The current Wi-Fi name is unavailable. Add it manually instead."
                             }
                         },
@@ -283,6 +284,29 @@ fun WifiRulesScreen(
             onAdd = {
                 addNetwork(it)
                 showAddDialog = false
+            },
+        )
+    }
+
+    if (showLocationServicesDialog) {
+        AlertDialog(
+            onDismissRequest = { showLocationServicesDialog = false },
+            title = { Text("Turn on Location services") },
+            text = {
+                Text(
+                    "SyncDroid already has Wi-Fi permission, but Android is hiding the connected network name because Location services are off.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showLocationServicesDialog = false
+                        locationSettingsLauncher.launch(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    },
+                ) { Text("Open Location settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLocationServicesDialog = false }) { Text("Cancel") }
             },
         )
     }

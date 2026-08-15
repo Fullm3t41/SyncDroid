@@ -16,4 +16,16 @@ class MeshRuntimeDiscoveryModeTest {
     @Test fun disablingSchedulingKeepsDiscoveryContinuous() {
         assertTrue(shouldRunContinuousDiscovery(appInForeground = false, scheduledDiscoveryEnabled = false))
     }
+
+    @Test fun activeSyncKeepsDiscoveryRunningPastWindowEnd() {
+        assertTrue(shouldKeepDiscoveryActiveWhileSyncing(activeSyncCount = 1, runtimeClosing = false))
+    }
+
+    @Test fun discoveryCanStopAfterActiveSyncFinishes() {
+        assertFalse(shouldKeepDiscoveryActiveWhileSyncing(activeSyncCount = 0, runtimeClosing = false))
+    }
+
+    @Test fun explicitRuntimeShutdownDoesNotWaitForActiveSync() {
+        assertFalse(shouldKeepDiscoveryActiveWhileSyncing(activeSyncCount = 1, runtimeClosing = true))
+    }
 }

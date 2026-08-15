@@ -62,6 +62,26 @@ class MeshWireCodecTest {
         assertThrows(IllegalArgumentException::class.java) { MeshWireCodec.decode(byteArrayOf(0, 1)) }
     }
 
+    @Test fun removalEventRoundTripsInMeshBundle() {
+        val signer = testSigner()
+        val removal = MembershipEvent.createRemoveDevice(
+            "group-1",
+            "Leaving device",
+            signer.publicKey,
+            signer,
+            emptyList(),
+            VersionVector().increment(signer.deviceId),
+            400,
+        )
+
+        val decoded = MeshWireCodec.decode(
+            MeshWireCodec.encode(MeshStateBundle("Mesh", listOf(removal), emptyList())),
+        )
+
+        assertEquals(removal, decoded.membershipEvents.single())
+        assertTrue(decoded.membershipEvents.single().verifySignature(signer.publicKey))
+    }
+
     @Test fun decoderRejectsUnknownMajorVersion() {
         val encoded = MeshWireCodec.encode(MeshStateBundle("Mesh", emptyList(), emptyList()))
         encoded[5] = 3

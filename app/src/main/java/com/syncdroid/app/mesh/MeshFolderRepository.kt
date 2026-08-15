@@ -12,6 +12,7 @@ import org.json.JSONArray
 enum class LocalFolderBindingState {
     PENDING_CONFIGURATION,
     CONFIGURED,
+    DECLINED,
 }
 
 class MeshFolderRepository(
@@ -56,6 +57,19 @@ class MeshFolderRepository(
                 deviceId = currentDeviceId,
                 localLocation = localLocation,
                 state = LocalFolderBindingState.CONFIGURED.name,
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    suspend fun declineLocalFolder(folderId: String) {
+        requireNotNull(syncDao.getFolder(folderId)) { "Unknown mesh folder" }
+        syncDao.upsertLocalBinding(
+            LocalFolderBindingEntity(
+                folderId = folderId,
+                deviceId = currentDeviceId,
+                localLocation = null,
+                state = LocalFolderBindingState.DECLINED.name,
                 updatedAtMillis = System.currentTimeMillis(),
             ),
         )

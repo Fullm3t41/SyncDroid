@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
@@ -45,12 +46,14 @@ fun SaveCard(
     modifier: Modifier = Modifier,
     onCreateNewFolder: () -> Unit = {},
     onChooseExistingFolder: () -> Unit = {},
+    onDeclineFolder: () -> Unit = {},
     cloudEnabled: Boolean = false,
     cloudEditable: Boolean = false,
     cloudDetail: String = "Disabled",
     onCloudEnabledChange: (Boolean) -> Unit = {},
     onOpenFolder: () -> Unit = {},
     onOpenFolderSettings: () -> Unit = {},
+    onReviewConflicts: () -> Unit = {},
 ) {
     Card(
         modifier = modifier
@@ -77,10 +80,10 @@ fun SaveCard(
                 Column(Modifier.weight(1f)) {
                     Text(save.game, style = MaterialTheme.typography.titleMedium)
                     Text(
-                        if (save.status == SaveStatus.Configure) {
-                            "Available from your mesh · choose a local folder"
-                        } else {
-                            save.updatedOn
+                        when (save.status) {
+                            SaveStatus.Configure -> "Available from your mesh · choose a local folder"
+                            SaveStatus.Declined -> "Declined on this device"
+                            else -> save.updatedOn
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -99,7 +102,7 @@ fun SaveCard(
                 Spacer(Modifier.height(18.dp))
                 DetailRow("Folder", save.path.ifBlank { "Not configured on this device" })
                 DetailRow("Copies", "${save.copies} devices")
-                if (save.status != SaveStatus.Configure) {
+                if (save.status != SaveStatus.Configure && save.status != SaveStatus.Declined) {
                     DetailRow("Last synced", save.updatedOn)
                 }
                 DetailRow("File filters", save.filterSummary)
@@ -122,7 +125,7 @@ fun SaveCard(
                         onCheckedChange = if (cloudEditable) onCloudEnabledChange else null,
                     )
                 }
-                if (save.status != SaveStatus.Configure && save.path.isNotBlank()) {
+                if (save.status != SaveStatus.Configure && save.status != SaveStatus.Declined && save.path.isNotBlank()) {
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = onOpenFolder,
@@ -161,11 +164,47 @@ fun SaveCard(
                             color = MaterialTheme.colorScheme.onErrorContainer,
                         )
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onReviewConflicts,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Review conflicts")
+                    }
                 }
                 if (save.status == SaveStatus.Configure) {
                     Spacer(Modifier.height(12.dp))
                     Text(
                         "This folder was added by another mesh device. Its files will not sync here until you choose where they belong.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onCreateNewFolder,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Create new folder")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onChooseExistingFolder,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Choose existing folder")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onDeclineFolder,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Decline folder")
+                    }
+                }
+                if (save.status == SaveStatus.Declined) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "This folder is not synced to this device. You can configure it later without asking another mesh member to share it again.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -196,18 +235,21 @@ private fun StatusPill(status: SaveStatus) {
         SaveStatus.Syncing -> Icons.Rounded.Sync
         SaveStatus.Conflict -> Icons.Rounded.Warning
         SaveStatus.Configure -> Icons.Rounded.Folder
+        SaveStatus.Declined -> Icons.Rounded.Block
     }
     val label = when (status) {
         SaveStatus.Synced -> "Synced"
         SaveStatus.Syncing -> "Syncing"
         SaveStatus.Conflict -> "Review"
         SaveStatus.Configure -> "Configure"
+        SaveStatus.Declined -> "Declined"
     }
     val color = when (status) {
         SaveStatus.Synced -> MaterialTheme.colorScheme.secondary
         SaveStatus.Syncing -> MaterialTheme.colorScheme.primary
         SaveStatus.Conflict -> MaterialTheme.colorScheme.error
         SaveStatus.Configure -> MaterialTheme.colorScheme.tertiary
+        SaveStatus.Declined -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(color = color.copy(alpha = 0.12f), shape = CircleShape) {
         Row(

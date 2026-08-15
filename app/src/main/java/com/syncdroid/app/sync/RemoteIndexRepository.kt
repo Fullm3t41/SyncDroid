@@ -7,6 +7,7 @@ import com.syncdroid.app.data.FolderIndexStateEntity
 import com.syncdroid.app.data.RemoteFileVersionEntity
 import com.syncdroid.app.data.SyncDroidDatabase
 import java.security.SecureRandom
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 data class IndexedFileRecord(
@@ -107,7 +108,16 @@ class RemoteIndexRepository(
         val recordsByPath = update.files.associateBy { normalizedRelativePath(it.relativePath) }
         val plans = remoteFiles.map { remote ->
             val local = localByPath[remote.relativePath]
-            val (action, reason) = if (remote.relativePath in exceptions) {
+            val pendingResolution = syncDao.pendingRemoteResolution(update.folderId, remote.relativePath)
+            val (action, reason) = if (pendingResolution?.matches(remote) == true) {
+                FileSyncAction.DownloadRemote to if (pendingResolution.state == ConflictState.KeepBoth.name) {
+                    "User kept both versions; restore the selected remote version at the original path"
+                } else {
+                    "User selected the remote version"
+                }
+            } else if (pendingResolution != null) {
+                FileSyncAction.Nothing to "Waiting for the version selected by the user"
+            } else if (remote.relativePath in exceptions) {
                 FileSyncAction.Nothing to "This device has an active overwrite-only exception"
             } else {
                 decideFileSync(local, remote)
@@ -147,7 +157,16 @@ class RemoteIndexRepository(
                 .sortedBy(RemoteFileVersionEntity::remoteSequence)
             for (remote in pending) {
                 val local = localByPath[remote.relativePath]
-                val (action, reason) = if (remote.relativePath in exceptions) {
+                val pendingResolution = syncDao.pendingRemoteResolution(folderId, remote.relativePath)
+                val (action, reason) = if (pendingResolution?.matches(remote) == true) {
+                    FileSyncAction.DownloadRemote to if (pendingResolution.state == ConflictState.KeepBoth.name) {
+                        "User kept both versions; restore the selected remote version at the original path"
+                    } else {
+                        "User selected the remote version"
+                    }
+                } else if (pendingResolution != null) {
+                    FileSyncAction.Nothing to "Waiting for the version selected by the user"
+                } else if (remote.relativePath in exceptions) {
                     FileSyncAction.Nothing to "This device has an active overwrite-only exception"
                 } else {
                     decideFileSync(local, remote)
@@ -164,6 +183,9 @@ class RemoteIndexRepository(
         acknowledgeRemoteSequence: Boolean = true,
     ) {
         database.withTransaction {
+            val previousLocal = syncDao.fileVersion(remote.folderId, remote.relativePath)
+            val pendingResolution = syncDao.pendingRemoteResolution(remote.folderId, remote.relativePath)
+                ?.takeIf { it.matches(remote) }
             val localState = syncDao.folderIndexState(remote.folderId, currentDeviceId) ?: FolderIndexStateEntity(
                 remote.folderId,
                 currentDeviceId,
@@ -174,6 +196,14 @@ class RemoteIndexRepository(
                 System.currentTimeMillis(),
             )
             val nextSequence = localState.maxSequence + 1
+            val appliedVector = if (pendingResolution != null && previousLocal != null) {
+                VersionVector.fromJson(previousLocal.versionVectorJson)
+                    .merge(VersionVector.fromJson(remote.versionVectorJson))
+                    .increment(currentDeviceId)
+                    .toJson()
+            } else {
+                remote.versionVectorJson
+            }
             syncDao.upsertFileVersion(
                 FileVersionEntity(
                     remote.folderId,
@@ -184,7 +214,7 @@ class RemoteIndexRepository(
                     remote.contentSha256,
                     remote.previousContentSha256,
                     remote.deleted,
-                    remote.versionVectorJson,
+                    appliedVector,
                     remote.originDeviceId.ifBlank { remoteDeviceId },
                     nextSequence,
                 ),
@@ -196,6 +226,7 @@ class RemoteIndexRepository(
                 updatedAtMillis = System.currentTimeMillis(),
             ))
             if (acknowledgeRemoteSequence) acknowledgeRemoteApplied(remoteDeviceId, remote)
+            syncDao.completeRemoteResolution(remote.folderId, remote.relativePath, System.currentTimeMillis())
         }
     }
 
@@ -205,9 +236,10 @@ class RemoteIndexRepository(
     }
 
     private suspend fun recordConflict(folderId: String, local: FileVersionEntity?, remote: RemoteFileVersionEntity) {
+        val conflictKey = "$folderId\u0000${remote.relativePath}\u0000${local?.contentSha256.orEmpty()}\u0000${remote.deviceId}\u0000${remote.contentSha256}"
         syncDao.upsertConflict(
             ConflictEntity(
-                conflictId = UUID.randomUUID().toString(),
+                conflictId = UUID.nameUUIDFromBytes(conflictKey.toByteArray(StandardCharsets.UTF_8)).toString(),
                 folderId = folderId,
                 relativePath = remote.relativePath,
                 leftSnapshotId = local?.let { "local:${it.fileId}:${it.contentSha256}" } ?: "local:missing",
@@ -215,6 +247,7 @@ class RemoteIndexRepository(
                 state = ConflictState.Unresolved.name,
                 createdAtMillis = System.currentTimeMillis(),
                 resolvedAtMillis = null,
+                renamedRelativePath = null,
             ),
         )
     }

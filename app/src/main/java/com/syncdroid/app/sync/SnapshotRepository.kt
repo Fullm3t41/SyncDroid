@@ -58,6 +58,7 @@ class SnapshotRepository(
         val policy = runCatching { FolderDeletionPolicy.valueOf(folder.deletionPolicy) }
             .getOrDefault(FolderDeletionPolicy.PROPAGATE)
         val activeExceptions = syncDao.activeExceptions(folderId).mapTo(mutableSetOf()) { it.relativePath }
+        val awaitingRemoteResolution = syncDao.pathsAwaitingRemoteResolution(folderId).toSet()
         val previousSnapshot = syncDao.latestSnapshot(folderId)
         val previousFiles = existingFileVersions(folderId, previousSnapshot)
             .associateBy(FileVersionEntity::relativePath)
@@ -77,6 +78,7 @@ class SnapshotRepository(
         val updated = linkedMapOf<String, FileVersionEntity>()
 
         for (file in scannedFiles) {
+            if (file.relativePath in awaitingRemoteResolution) continue
             val previous = previousFiles[file.relativePath]
             val unchanged = previous != null && previous.localSequence > 0 && !previous.deleted &&
                 previous.sizeBytes == file.sizeBytes &&
@@ -109,6 +111,7 @@ class SnapshotRepository(
         for ((path, previous) in previousFiles) {
             if (path in scannedPaths) continue
             when {
+                path in awaitingRemoteResolution -> updated[path] = previous
                 path in activeExceptions || policy == FolderDeletionPolicy.OVERWRITE_ONLY -> {
                     if (path !in activeExceptions) {
                         exceptionRepository.record(folderId, path, nowMillis)

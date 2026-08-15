@@ -36,6 +36,9 @@ interface MeshDao {
 
     @Query("SELECT * FROM membership_events WHERE groupId = :groupId ORDER BY createdAtMillis")
     suspend fun membershipEvents(groupId: String): List<MembershipEventEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM membership_events WHERE eventId = :eventId)")
+    suspend fun hasMembershipEvent(eventId: String): Boolean
 }
 
 @Dao
@@ -94,8 +97,8 @@ interface SyncDao {
     @Query("SELECT * FROM sync_folders ORDER BY displayName")
     fun observeFolders(): Flow<List<SyncFolderEntity>>
 
-    @Query("SELECT * FROM sync_folders WHERE enabled = 1 ORDER BY folderId")
-    suspend fun enabledFolders(): List<SyncFolderEntity>
+    @Query("SELECT * FROM sync_folders WHERE groupId = :groupId AND enabled = 1 ORDER BY folderId")
+    suspend fun enabledFolders(groupId: String): List<SyncFolderEntity>
 
     @Query("SELECT * FROM local_folder_bindings WHERE deviceId = :deviceId ORDER BY updatedAtMillis DESC")
     fun observeBindings(deviceId: String): Flow<List<LocalFolderBindingEntity>>
@@ -106,17 +109,24 @@ interface SyncDao {
                b.localLocation, b.state AS bindingState, f.deletionPolicy, f.createdByDeviceId
         FROM sync_folders AS f
         INNER JOIN local_folder_bindings AS b ON b.folderId = f.folderId
-        WHERE b.deviceId = :deviceId AND f.enabled = 1
+        WHERE b.deviceId = :deviceId AND f.groupId = :groupId AND f.enabled = 1
         ORDER BY b.updatedAtMillis DESC
         """,
     )
-    fun observeLocalFolderViews(deviceId: String): Flow<List<LocalFolderView>>
+    fun observeLocalFolderViews(deviceId: String, groupId: String): Flow<List<LocalFolderView>>
 
     @Query("SELECT * FROM local_folder_bindings WHERE folderId = :folderId AND deviceId = :deviceId LIMIT 1")
     suspend fun getBinding(folderId: String, deviceId: String): LocalFolderBindingEntity?
 
-    @Query("SELECT * FROM local_folder_bindings WHERE deviceId = :deviceId AND state = 'CONFIGURED' ORDER BY folderId")
-    suspend fun configuredBindings(deviceId: String): List<LocalFolderBindingEntity>
+    @Query(
+        """
+        SELECT b.* FROM local_folder_bindings AS b
+        INNER JOIN sync_folders AS f ON f.folderId = b.folderId
+        WHERE b.deviceId = :deviceId AND f.groupId = :groupId AND b.state = 'CONFIGURED'
+        ORDER BY b.folderId
+        """,
+    )
+    suspend fun configuredBindings(deviceId: String, groupId: String): List<LocalFolderBindingEntity>
 
     @Query("SELECT * FROM folder_announcements WHERE groupId = :groupId ORDER BY createdAtMillis")
     suspend fun folderAnnouncements(groupId: String): List<FolderAnnouncementEntity>
@@ -229,6 +239,35 @@ interface SyncDao {
 
     @Query("SELECT COUNT(*) FROM conflicts WHERE folderId = :folderId AND state = 'Unresolved'")
     suspend fun unresolvedConflictCount(folderId: String): Int
+
+    @Query("SELECT * FROM conflicts WHERE conflictId = :conflictId LIMIT 1")
+    suspend fun conflict(conflictId: String): ConflictEntity?
+
+    @Query("SELECT * FROM conflicts WHERE folderId = :folderId AND relativePath = :relativePath AND state IN ('KeepRight', 'KeepBoth') ORDER BY createdAtMillis DESC LIMIT 1")
+    suspend fun pendingRemoteResolution(folderId: String, relativePath: String): ConflictEntity?
+
+    @Query("SELECT relativePath FROM conflicts WHERE folderId = :folderId AND state IN ('KeepRight', 'KeepBoth')")
+    suspend fun pathsAwaitingRemoteResolution(folderId: String): List<String>
+
+    @Query("UPDATE conflicts SET state = :state, resolvedAtMillis = :resolvedAtMillis, renamedRelativePath = :renamedRelativePath WHERE conflictId = :conflictId")
+    suspend fun updateConflictResolution(
+        conflictId: String,
+        state: String,
+        resolvedAtMillis: Long?,
+        renamedRelativePath: String?,
+    )
+
+    @Query("UPDATE conflicts SET state = 'Resolved', resolvedAtMillis = :resolvedAtMillis WHERE folderId = :folderId AND relativePath = :relativePath AND state = 'Unresolved'")
+    suspend fun resolveDuplicateConflicts(folderId: String, relativePath: String, resolvedAtMillis: Long)
+
+    @Query("UPDATE conflicts SET state = 'Resolved', resolvedAtMillis = :resolvedAtMillis WHERE folderId = :folderId AND relativePath = :relativePath AND state IN ('KeepRight', 'KeepBoth')")
+    suspend fun completeRemoteResolution(folderId: String, relativePath: String, resolvedAtMillis: Long)
+
+    @Query("SELECT * FROM remote_file_versions WHERE folderId = :folderId AND deviceId = :deviceId AND relativePath = :relativePath LIMIT 1")
+    suspend fun remoteFileVersion(folderId: String, deviceId: String, relativePath: String): RemoteFileVersionEntity?
+
+    @Query("SELECT * FROM remote_file_versions WHERE folderId = :folderId ORDER BY relativePath")
+    suspend fun allRemoteFileVersions(folderId: String): List<RemoteFileVersionEntity>
 }
 
 @Dao

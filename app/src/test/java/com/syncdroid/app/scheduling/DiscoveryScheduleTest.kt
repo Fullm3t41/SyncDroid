@@ -2,6 +2,8 @@ package com.syncdroid.app.scheduling
 
 import java.time.LocalTime
 import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -55,6 +57,57 @@ class DiscoveryScheduleTest {
     }
 
     @Test
+    fun sixHourScheduleUsesMidnightBasedBoundaries() {
+        val now = LocalDateTime.of(2026, 8, 15, 7, 42)
+
+        assertEquals(LocalDateTime.of(2026, 8, 15, 12, 0), nextRendezvousStart(now, 6 * 60))
+    }
+
+    @Test
+    fun dailyScheduleAlwaysReturnsMidnight() {
+        val now = LocalDateTime.of(2026, 8, 15, 7, 42)
+
+        assertEquals(LocalDateTime.of(2026, 8, 16, 0, 0), nextRendezvousStart(now, 24 * 60))
+    }
+
+    @Test
+    fun fortyEightHourScheduleUsesSharedAlternatingMidnights() {
+        val now = LocalDateTime.of(2026, 8, 15, 7, 42)
+
+        assertEquals(LocalDateTime.of(2026, 8, 17, 0, 0), nextRendezvousStart(now, 48 * 60))
+    }
+
+    @Test
+    fun weeklyScheduleUsesMondayMidnight() {
+        val now = LocalDateTime.of(2026, 8, 15, 7, 42)
+
+        assertEquals(LocalDateTime.of(2026, 8, 17, 0, 0), nextRendezvousStart(now, 7 * 24 * 60))
+    }
+
+    @Test
+    fun upcomingWindowsRemainTheNextFutureCadencePoints() {
+        val now = LocalDateTime.of(2026, 8, 15, 7, 42)
+        val windows = alignedDiscoveryWindows(now, intervalMinutes = 48 * 60, count = 3)
+
+        assertEquals(
+            listOf(
+                LocalDateTime.of(2026, 8, 17, 0, 0),
+                LocalDateTime.of(2026, 8, 19, 0, 0),
+                LocalDateTime.of(2026, 8, 21, 0, 0),
+            ),
+            windows.map { it.start },
+        )
+    }
+
+    @Test
+    fun zonedDelayPreservesMidnightAcrossDaylightSavingChange() {
+        val adelaide = ZoneId.of("Australia/Adelaide")
+        val now = ZonedDateTime.of(2026, 10, 4, 0, 0, 0, 0, adelaide)
+
+        assertEquals(47 * 60 * 60 * 1_000L, millisUntilNextRendezvous(now, 48 * 60))
+    }
+
+    @Test
     fun cadenceDefaultsCanBeOverridden() {
         assertEquals(30L, DiscoveryPolicy(intervalMinutes = 5).windowSeconds)
         assertEquals(300L, DiscoveryPolicy(intervalMinutes = 15).windowSeconds)
@@ -62,5 +115,13 @@ class DiscoveryScheduleTest {
             60L,
             DiscoveryPolicy(intervalMinutes = 5, windowSecondsOverride = 60).windowSeconds,
         )
+    }
+
+    @Test
+    fun policySupportsExtendedIntervals() {
+        assertEquals(300L, DiscoveryPolicy(intervalMinutes = 6 * 60).windowSeconds)
+        assertEquals(300L, DiscoveryPolicy(intervalMinutes = 24 * 60).windowSeconds)
+        assertEquals(300L, DiscoveryPolicy(intervalMinutes = 48 * 60).windowSeconds)
+        assertEquals(300L, DiscoveryPolicy(intervalMinutes = 7 * 24 * 60).windowSeconds)
     }
 }

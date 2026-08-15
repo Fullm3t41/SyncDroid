@@ -238,7 +238,7 @@ object MeshWireCodec {
     private val MAGIC_V2 = byteArrayOf('S'.code.toByte(), 'D'.code.toByte(), 'M'.code.toByte(), 'B'.code.toByte())
     private const val LEGACY_MAGIC_V1 = "syncdroid-mesh-state-v1"
     private const val PROTOCOL_MAJOR = 2
-    private const val PROTOCOL_MINOR = 2
+    private const val PROTOCOL_MINOR = 3
     private const val MAX_ITEMS = 10_000
     private const val MAX_STRING_BYTES = 1024 * 1024
     private const val MAX_BUNDLE_BYTES = 16 * 1024 * 1024

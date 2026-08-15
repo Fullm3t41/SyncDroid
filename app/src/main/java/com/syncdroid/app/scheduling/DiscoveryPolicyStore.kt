@@ -15,7 +15,7 @@ data class DiscoveryPolicy(
     val windowSeconds: Long get() = windowSecondsOverride ?: rendezvousWindowSeconds(intervalMinutes)
 
     companion object {
-        val SUPPORTED_INTERVALS = setOf(5, 15, 30, 60)
+        val SUPPORTED_INTERVALS = setOf(5, 15, 30, 60, 6 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
         val SUPPORTED_WINDOWS_SECONDS = setOf(30L, 60L, 120L, 300L)
     }
 }

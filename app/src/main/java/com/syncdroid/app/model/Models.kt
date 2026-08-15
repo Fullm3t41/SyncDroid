@@ -1,6 +1,7 @@
 package com.syncdroid.app.model
 
 data class PeerDevice(
+    val deviceId: String,
     val name: String,
     val detail: String,
     val online: Boolean,
@@ -22,4 +23,4 @@ data class SaveFolder(
     val supportsFolderSettings: Boolean = false,
 )
 
-enum class SaveStatus { Synced, Syncing, Conflict, Configure }
+enum class SaveStatus { Synced, Syncing, Conflict, Configure, Declined }

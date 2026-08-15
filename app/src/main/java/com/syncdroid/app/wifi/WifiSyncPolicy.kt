@@ -16,4 +16,23 @@ data class WifiSyncPolicy(
     }
 
     fun enabledNetworkCount(): Int = networks.count { it.enabled }
+
+    fun allowsSyncWithForegroundOverride(
+        isWifiConnected: Boolean,
+        currentSsid: String?,
+        appInForeground: Boolean,
+    ): Boolean = isWifiConnected && (appInForeground || allowsSync(isWifiConnected, currentSsid))
+
+    fun withNetworkEnabled(rawSsid: String): WifiSyncPolicy {
+        val ssid = rawSsid.trim().removeSurrounding("\"")
+        if (ssid.isEmpty()) return this
+        val existingIndex = networks.indexOfFirst { it.ssid == ssid }
+        val updated = networks.toMutableList()
+        if (existingIndex >= 0) {
+            updated[existingIndex] = updated[existingIndex].copy(enabled = true)
+        } else {
+            updated.add(WifiNetworkRule(ssid))
+        }
+        return copy(requireApprovedWifi = true, networks = updated)
+    }
 }

@@ -15,7 +15,7 @@ class SyncServiceNotification(private val context: Context) {
     init { createChannel() }
 
     fun build(title: String, detail: String, policy: DiscoveryPolicy): Notification {
-        val interval = if (policy.intervalMinutes == 60) "1 hour" else "${policy.intervalMinutes} minutes"
+        val interval = formatInterval(policy.intervalMinutes)
         val window = formatWindow(policy.windowSeconds)
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_syncdroid)
@@ -74,7 +74,20 @@ class SyncServiceNotification(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun shortInterval(minutes: Int): String = if (minutes == 60) "1h" else "${minutes}m"
+    private fun shortInterval(minutes: Int): String = when {
+        minutes == 7 * 24 * 60 -> "1w"
+        minutes % (24 * 60) == 0 -> "${minutes / (24 * 60)}d"
+        minutes % 60 == 0 -> "${minutes / 60}h"
+        else -> "${minutes}m"
+    }
+    private fun formatInterval(minutes: Int): String = when {
+        minutes == 7 * 24 * 60 -> "1 week"
+        minutes == 24 * 60 -> "24 hours"
+        minutes % (24 * 60) == 0 -> "${minutes / (24 * 60)} days"
+        minutes == 60 -> "1 hour"
+        minutes % 60 == 0 -> "${minutes / 60} hours"
+        else -> "$minutes minutes"
+    }
     private fun shortWindow(seconds: Long): String = if (seconds < 60) "${seconds}s" else "${seconds / 60}m"
     private fun formatWindow(seconds: Long): String = when {
         seconds < 60 -> "$seconds seconds"

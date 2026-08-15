@@ -46,6 +46,8 @@ class SyncForegroundService : Service() {
     private var runtime: MeshRuntime? = null
     private var runtimeKey: RuntimeKey? = null
     private var reconcileJob: Job? = null
+    private var reconcilePending = false
+    private var pendingReconcileForce = false
     private val activePeers = linkedMapOf<String, String>()
     private val peerTransferRates = linkedMapOf<String, Long>()
     private var statusTitle = "Starting background sync"
@@ -69,6 +71,7 @@ class SyncForegroundService : Service() {
         serviceScope.launch {
             SyncServiceController.appInForeground.collect {
                 publishNotification()
+                reconcile(force = false)
             }
         }
         wifiMonitor = WifiConnectionMonitor(applicationContext)
@@ -122,15 +125,21 @@ class SyncForegroundService : Service() {
     }
 
     private fun reconcile(force: Boolean) {
+        if (activePeers.isNotEmpty()) {
+            reconcilePending = true
+            pendingReconcileForce = pendingReconcileForce || force
+            return
+        }
         reconcileJob?.cancel()
         reconcileJob = serviceScope.launch {
             val discoveryPolicy = DiscoveryPolicyStore(this@SyncForegroundService).load()
             val wifiPolicy = WifiSyncPolicyStore(this@SyncForegroundService).load()
             val profile = LocalMeshProfileStore(this@SyncForegroundService).getOrCreate()
             val permissionGranted = hasWifiRuntimePermission(this@SyncForegroundService)
-            val syncAllowed = permissionGranted && wifiPolicy.allowsSync(
-                wifiConnection.isWifiConnected,
-                wifiConnection.ssid,
+            val syncAllowed = permissionGranted && wifiPolicy.allowsSyncWithForegroundOverride(
+                isWifiConnected = wifiConnection.isWifiConnected,
+                currentSsid = wifiConnection.ssid,
+                appInForeground = SyncServiceController.appInForeground.value,
             )
             val key = RuntimeKey(
                 groupId = profile.groupId,
@@ -266,6 +275,7 @@ class SyncForegroundService : Service() {
                     showActiveSyncStatus()
                 }
                 SyncServiceController.report(syncCompleted = true)
+                runPendingReconcileIfIdle()
             }
             is MeshRuntimeEvent.SyncFailed -> {
                 activePeers.remove(event.peerId)
@@ -276,6 +286,7 @@ class SyncForegroundService : Service() {
                     showActiveSyncStatus()
                 }
                 eventNotifications.showSyncFailed(event.peerName)
+                runPendingReconcileIfIdle()
             }
             is MeshRuntimeEvent.ChatMessagesReceived -> {
                 eventNotifications.showChatMessages(event.count, event.authorName, event.preview)
@@ -296,6 +307,14 @@ class SyncForegroundService : Service() {
             "Comparing files and preparing transfers"
         }
         setStatus(title, detail)
+    }
+
+    private fun runPendingReconcileIfIdle() {
+        if (activePeers.isNotEmpty() || !reconcilePending) return
+        val force = pendingReconcileForce
+        reconcilePending = false
+        pendingReconcileForce = false
+        reconcile(force)
     }
 
     private fun setStatus(title: String, detail: String) {

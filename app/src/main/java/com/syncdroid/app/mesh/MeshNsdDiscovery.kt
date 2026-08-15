@@ -23,6 +23,7 @@ data class DiscoveredMeshPeer(
 class MeshNsdDiscovery(
     context: Context,
     private val localDeviceId: String,
+    private val advertise: Boolean = true,
 ) : AutoCloseable {
     private val appContext = context.applicationContext
     private val nsd = appContext.getSystemService(NsdManager::class.java)
@@ -37,12 +38,12 @@ class MeshNsdDiscovery(
     private var resolutionActive = false
     private var closed = true
 
-    fun start(port: Int) {
-        require(port in 1..65535) { "A listening peer port is required" }
+    fun start(port: Int = 0) {
+        if (advertise) require(port in 1..65535) { "A listening peer port is required" }
         check(registrationListener == null && discoveryListener == null) { "Discovery is already running" }
         closed = false
         multicastLock.acquire()
-        register(port)
+        if (advertise) register(port)
         discover()
     }
 
