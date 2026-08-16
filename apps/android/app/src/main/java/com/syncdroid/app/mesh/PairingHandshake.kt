@@ -1,9 +1,6 @@
 package com.syncdroid.app.mesh
 
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.math.BigInteger
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -19,54 +16,22 @@ import org.bouncycastle.crypto.agreement.jpake.JPAKERound2Payload
 import org.bouncycastle.crypto.agreement.jpake.JPAKERound3Payload
 import org.bouncycastle.crypto.digests.SHA256Digest
 
-enum class PairingRole { Inviter, Joiner }
+typealias PairingRole = com.syncdroid.shared.protocol.PairingRole
+typealias PairingIdentity = com.syncdroid.shared.protocol.PairingIdentity
+typealias PairingRound1 = com.syncdroid.shared.protocol.PairingRound1
+typealias PairingRound2 = com.syncdroid.shared.protocol.PairingRound2
+typealias PairingRound3 = com.syncdroid.shared.protocol.PairingRound3
+typealias PairingConfirmation = com.syncdroid.shared.protocol.PairingConfirmation
 
-data class PairingIdentity(
-    val deviceId: String,
-    val publicKeySpkiBase64: String,
-    val displayName: String = "Device",
-) {
-    fun decodePublicKey(): PublicKey = decodePublicKey(publicKeySpkiBase64)
+fun PairingIdentity.decodePublicKey(): PublicKey = decodePublicKey(publicKeySpkiBase64)
 
-    companion object {
-        fun from(signer: DeviceSigner, displayName: String = "Device") = PairingIdentity(
-            signer.deviceId,
-            Base64.getEncoder().encodeToString(signer.publicKey.encoded),
-            displayName,
-        )
-    }
-}
-
-data class PairingRound1(
-    val invitationId: String,
-    val role: PairingRole,
-    val identity: PairingIdentity,
-    val participantId: String,
-    val gx1: BigInteger,
-    val gx2: BigInteger,
-    val proofX1: List<BigInteger>,
-    val proofX2: List<BigInteger>,
-)
-
-data class PairingRound2(
-    val invitationId: String,
-    val role: PairingRole,
-    val participantId: String,
-    val a: BigInteger,
-    val proofX2s: List<BigInteger>,
-)
-
-data class PairingRound3(
-    val invitationId: String,
-    val role: PairingRole,
-    val participantId: String,
-    val macTag: BigInteger,
-)
-
-data class PairingConfirmation(
-    val invitationId: String,
-    val role: PairingRole,
-    val hmacSha256: ByteArray,
+fun com.syncdroid.shared.protocol.PairingIdentity.Companion.from(
+    signer: DeviceSigner,
+    displayName: String = "Device",
+) = PairingIdentity(
+    signer.deviceId,
+    Base64.getEncoder().encodeToString(signer.publicKey.encoded),
+    displayName,
 )
 
 data class PairingResult(
@@ -246,95 +211,8 @@ class PairingHandshake(
 }
 
 object PairingWireCodec {
-    fun encode(value: Any): ByteArray = ByteArrayOutputStream().use { bytes ->
-        DataOutputStream(bytes).use { output ->
-            output.write(MAGIC)
-            when (value) {
-                is PairingRound1 -> output.writeRound1(value)
-                is PairingRound2 -> output.writeRound2(value)
-                is PairingRound3 -> output.writeRound3(value)
-                is PairingConfirmation -> output.writeConfirmation(value)
-                else -> error("Unsupported pairing message")
-            }
-        }
-        bytes.toByteArray()
-    }
-
-    fun decode(bytes: ByteArray): Any = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-        require(ByteArray(MAGIC.size).also(input::readFully).contentEquals(MAGIC)) { "Invalid pairing message" }
-        val value = when (val type = input.readUnsignedByte()) {
-            TYPE_ROUND_1 -> input.readRound1()
-            TYPE_ROUND_2 -> input.readRound2()
-            TYPE_ROUND_3 -> input.readRound3()
-            TYPE_CONFIRMATION -> input.readConfirmation()
-            else -> error("Unknown pairing message type $type")
-        }
-        require(input.available() == 0) { "Trailing pairing message data" }
-        value
-    }
-
-    private fun DataOutputStream.writeRound1(value: PairingRound1) {
-        writeByte(TYPE_ROUND_1)
-        writeString(value.invitationId); writeByte(value.role.ordinal)
-        writeString(value.identity.deviceId); writeString(value.identity.publicKeySpkiBase64); writeString(value.identity.displayName)
-        writeString(value.participantId); writeBigInt(value.gx1); writeBigInt(value.gx2)
-        writeBigInts(value.proofX1); writeBigInts(value.proofX2)
-    }
-
-    private fun DataInputStream.readRound1() = PairingRound1(
-        readString(), readRole(), PairingIdentity(readString(), readString(), readString()), readString(),
-        readBigInt(), readBigInt(), readBigInts(), readBigInts(),
-    )
-
-    private fun DataOutputStream.writeRound2(value: PairingRound2) {
-        writeByte(TYPE_ROUND_2); writeString(value.invitationId); writeByte(value.role.ordinal)
-        writeString(value.participantId); writeBigInt(value.a); writeBigInts(value.proofX2s)
-    }
-
-    private fun DataInputStream.readRound2() = PairingRound2(
-        readString(), readRole(), readString(), readBigInt(), readBigInts(),
-    )
-
-    private fun DataOutputStream.writeRound3(value: PairingRound3) {
-        writeByte(TYPE_ROUND_3); writeString(value.invitationId); writeByte(value.role.ordinal)
-        writeString(value.participantId); writeBigInt(value.macTag)
-    }
-
-    private fun DataInputStream.readRound3() = PairingRound3(readString(), readRole(), readString(), readBigInt())
-
-    private fun DataOutputStream.writeConfirmation(value: PairingConfirmation) {
-        writeByte(TYPE_CONFIRMATION); writeString(value.invitationId); writeByte(value.role.ordinal)
-        writeBytesWithLength(value.hmacSha256)
-    }
-
-    private fun DataInputStream.readConfirmation() = PairingConfirmation(readString(), readRole(), readBytesWithLength())
-
-    private fun DataOutputStream.writeString(value: String) = writeBytesWithLength(value.toByteArray(StandardCharsets.UTF_8))
-    private fun DataInputStream.readString() = String(readBytesWithLength(), StandardCharsets.UTF_8)
-    private fun DataOutputStream.writeBigInt(value: BigInteger) = writeBytesWithLength(value.toByteArray())
-    private fun DataInputStream.readBigInt() = readBytesWithLength().also { require(it.isNotEmpty()) }.let(::BigInteger)
-    private fun DataOutputStream.writeBigInts(values: List<BigInteger>) {
-        require(values.size <= MAX_ITEMS); writeInt(values.size); values.forEach { writeBigInt(it) }
-    }
-    private fun DataInputStream.readBigInts(): List<BigInteger> {
-        val count = readInt(); require(count in 0..MAX_ITEMS); return List(count) { readBigInt() }
-    }
-    private fun DataOutputStream.writeBytesWithLength(value: ByteArray) {
-        require(value.size <= MAX_FIELD_BYTES); writeInt(value.size); write(value)
-    }
-    private fun DataInputStream.readBytesWithLength(): ByteArray {
-        val size = readInt(); require(size in 0..MAX_FIELD_BYTES); return ByteArray(size).also(::readFully)
-    }
-    private fun DataInputStream.readRole(): PairingRole = PairingRole.entries.getOrNull(readUnsignedByte())
-        ?: error("Unknown pairing role")
-
-    private val MAGIC = byteArrayOf('S'.code.toByte(), 'D'.code.toByte(), 'P'.code.toByte(), '1'.code.toByte())
-    private const val TYPE_ROUND_1 = 1
-    private const val TYPE_ROUND_2 = 2
-    private const val TYPE_ROUND_3 = 3
-    private const val TYPE_CONFIRMATION = 4
-    private const val MAX_ITEMS = 8
-    private const val MAX_FIELD_BYTES = 16 * 1024
+    fun encode(value: Any): ByteArray = com.syncdroid.shared.protocol.PairingWireCodec.encode(value)
+    fun decode(bytes: ByteArray): Any = com.syncdroid.shared.protocol.PairingWireCodec.decode(bytes)
 }
 
 class PairingConnectionProtocol(

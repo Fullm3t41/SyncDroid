@@ -6,7 +6,9 @@ import com.syncdroid.app.data.SyncExceptionEntity
 import com.syncdroid.app.data.SyncExceptionEventEntity
 import com.syncdroid.app.mesh.DeviceSigner
 import com.syncdroid.app.mesh.SyncExceptionEvent
+import com.syncdroid.app.mesh.create
 import com.syncdroid.app.mesh.decodePublicKey
+import com.syncdroid.app.mesh.verifySignature
 
 class FolderExceptionRepository(
     private val database: SyncDroidDatabase,

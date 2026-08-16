@@ -14,7 +14,6 @@ import com.syncdroid.app.sync.BlockManifestRepository
 import com.syncdroid.app.sync.FileSyncAction
 import com.syncdroid.app.sync.FileSyncPlan
 import com.syncdroid.app.sync.FileHistoryRepository
-import com.syncdroid.app.sync.FileTransferMessage
 import com.syncdroid.app.sync.FileTransferWireCodec
 import com.syncdroid.app.sync.DocumentTreeFileApplier
 import com.syncdroid.app.sync.FolderIndexUpdate
@@ -28,6 +27,8 @@ import com.syncdroid.app.sync.SnapshotRepository
 import com.syncdroid.app.sync.SyncFileApplier
 import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.WholeFilePeerClient
+import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.protocol.MeshSessionMessage
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID

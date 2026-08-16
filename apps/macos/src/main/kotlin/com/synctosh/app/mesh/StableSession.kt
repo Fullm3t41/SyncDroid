@@ -1,33 +1,15 @@
 package com.synctosh.app.mesh
 
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
+import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.protocol.MeshSessionMessage
+import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import java.security.SecureRandom
-import java.security.Signature
 import java.util.Base64
 
-data class StablePeerProof(
-    val groupId: String,
-    val deviceId: String,
-    val publicKeyBase64: String,
-    val tlsPublicKeyBase64: String,
-    val nonceBase64: String,
-    val signatureBase64: String,
-) {
-    fun payload(): ByteArray = canonicalBytes {
-        string("syncdroid-tls-identity-proof-v1")
-        string(groupId); string(deviceId); string(publicKeyBase64); string(tlsPublicKeyBase64); string(nonceBase64)
-    }
-
-    fun isValid(): Boolean = runCatching {
-        val key = decodePublicKey(publicKeyBase64)
-        deviceIdFor(key) == deviceId && Signature.getInstance("SHA256withECDSA").run {
-            initVerify(key); update(payload()); verify(Base64.getDecoder().decode(signatureBase64))
-        }
-    }.getOrDefault(false)
-}
+fun StablePeerProof.isValid(): Boolean = runCatching {
+    val key = decodePublicKey(publicKeyBase64)
+    deviceIdFor(key) == deviceId && verifyEcdsaSha256(key, payload(), signatureBase64)
+}.getOrDefault(false)
 
 class StablePeerAuthenticator(
     private val store: MeshStore,
@@ -66,160 +48,19 @@ class StablePeerAuthenticator(
 }
 
 object StablePeerProofCodec {
-    fun encode(value: StablePeerProof): ByteArray = ByteArrayOutputStream().use { bytes ->
-        DataOutputStream(bytes).use { output ->
-            output.writeInt(MAGIC)
-            listOf(value.groupId, value.deviceId, value.publicKeyBase64, value.tlsPublicKeyBase64, value.nonceBase64, value.signatureBase64)
-                .forEach { output.writeString(it) }
-        }
-        bytes.toByteArray()
-    }
+    fun encode(value: StablePeerProof): ByteArray =
+        com.syncdroid.shared.protocol.StablePeerProofWireCodec.encode(value)
 
-    fun decode(bytes: ByteArray): StablePeerProof = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-        require(input.readInt() == MAGIC)
-        StablePeerProof(input.readString(), input.readString(), input.readString(), input.readString(), input.readString(), input.readString())
-            .also { require(input.available() == 0) }
-    }
-
-    private fun DataOutputStream.writeString(value: String) {
-        val encoded = value.toByteArray(Charsets.UTF_8); require(encoded.size <= MAX_FIELD); writeInt(encoded.size); write(encoded)
-    }
-    private fun DataInputStream.readString(): String {
-        val size = readInt().also { require(it in 0..MAX_FIELD) }
-        return String(ByteArray(size).also(::readFully), Charsets.UTF_8)
-    }
-    private const val MAGIC = 0x53445049
-    private const val MAX_FIELD = 16 * 1024
-}
-
-data class FolderClock(
-    val folderId: String,
-    val localIndexEpoch: Long,
-    val localMaxSequence: Long,
-    val knownPeerIndexEpoch: Long,
-    val knownPeerReceivedSequence: Long,
-    val knownPeerAppliedSequence: Long,
-)
-
-data class FileBlock(val index: Int, val offsetBytes: Long, val sizeBytes: Int, val sha256: String)
-
-data class IndexedFileRecord(
-    val relativePath: String,
-    val fileId: String,
-    val sizeBytes: Long,
-    val modifiedAtMillis: Long,
-    val contentSha256: String,
-    val previousContentSha256: String?,
-    val originDeviceId: String,
-    val deleted: Boolean,
-    val version: VersionVector,
-    val sequence: Long,
-    val blockSizeBytes: Int,
-    val blocks: List<FileBlock>,
-)
-
-data class FolderIndexUpdate(
-    val folderId: String,
-    val indexEpoch: Long,
-    val previousSequence: Long,
-    val lastSequence: Long,
-    val fullIndex: Boolean,
-    val files: List<IndexedFileRecord>,
-)
-
-sealed interface MeshSessionMessage {
-    data class Metadata(val bundle: ByteArray) : MeshSessionMessage
-    data class Catalog(val folders: List<FolderClock>) : MeshSessionMessage
-    data class IndexBatch(val updates: List<FolderIndexUpdate>) : MeshSessionMessage
-    data class TransferPlan(val requestCount: Int) : MeshSessionMessage
-    data object PhaseDone : MeshSessionMessage
-    data class Error(val reason: String) : MeshSessionMessage
+    fun decode(bytes: ByteArray): StablePeerProof =
+        com.syncdroid.shared.protocol.StablePeerProofWireCodec.decode(bytes)
 }
 
 object MeshSessionCodec {
-    fun encode(message: MeshSessionMessage): ByteArray = ByteArrayOutputStream().use { bytes ->
-        DataOutputStream(bytes).use { output ->
-            output.writeInt(MAGIC); output.writeShort(VERSION)
-            when (message) {
-                is MeshSessionMessage.Metadata -> { output.writeByte(METADATA); output.writeData(message.bundle) }
-                is MeshSessionMessage.Catalog -> {
-                    output.writeByte(CATALOG); output.writeCount(message.folders.size)
-                    message.folders.forEach {
-                        output.writeString(it.folderId); output.writeLong(it.localIndexEpoch); output.writeLong(it.localMaxSequence)
-                        output.writeLong(it.knownPeerIndexEpoch); output.writeLong(it.knownPeerReceivedSequence); output.writeLong(it.knownPeerAppliedSequence)
-                    }
-                }
-                is MeshSessionMessage.IndexBatch -> {
-                    output.writeByte(INDEX_BATCH); output.writeCount(message.updates.size); message.updates.forEach { output.writeUpdate(it) }
-                }
-                is MeshSessionMessage.TransferPlan -> { require(message.requestCount in 0..MAX_REQUESTS); output.writeByte(TRANSFER_PLAN); output.writeInt(message.requestCount) }
-                MeshSessionMessage.PhaseDone -> output.writeByte(PHASE_DONE)
-                is MeshSessionMessage.Error -> { output.writeByte(ERROR); output.writeString(message.reason) }
-            }
-        }
-        bytes.toByteArray()
-    }
+    fun encode(message: MeshSessionMessage): ByteArray =
+        com.syncdroid.shared.protocol.MeshSessionWireCodec.encode(message)
 
-    fun decode(bytes: ByteArray): MeshSessionMessage = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-        require(input.readInt() == MAGIC && input.readUnsignedShort() == VERSION)
-        val value = when (input.readUnsignedByte()) {
-            METADATA -> MeshSessionMessage.Metadata(input.readData())
-            CATALOG -> MeshSessionMessage.Catalog(List(input.readCount()) {
-                FolderClock(input.readString(), input.readLong(), input.readLong(), input.readLong(), input.readLong(), input.readLong())
-            })
-            INDEX_BATCH -> MeshSessionMessage.IndexBatch(List(input.readCount()) { input.readUpdate() })
-            TRANSFER_PLAN -> MeshSessionMessage.TransferPlan(input.readInt().also { require(it in 0..MAX_REQUESTS) })
-            PHASE_DONE -> MeshSessionMessage.PhaseDone
-            ERROR -> MeshSessionMessage.Error(input.readString())
-            else -> error("Unknown mesh session message")
-        }
-        require(input.available() == 0); value
-    }
-
-    private fun DataOutputStream.writeUpdate(update: FolderIndexUpdate) {
-        writeString(update.folderId); writeLong(update.indexEpoch); writeLong(update.previousSequence); writeLong(update.lastSequence)
-        writeBoolean(update.fullIndex); writeCount(update.files.size)
-        update.files.forEach { file ->
-            writeString(file.relativePath); writeString(file.fileId); writeLong(file.sizeBytes); writeLong(file.modifiedAtMillis)
-            writeString(file.contentSha256); writeNullableString(file.previousContentSha256); writeString(file.originDeviceId)
-            writeBoolean(file.deleted); writeString(file.version.toJson()); writeLong(file.sequence); writeInt(file.blockSizeBytes)
-            writeCount(file.blocks.size); file.blocks.forEach { block ->
-                writeInt(block.index); writeLong(block.offsetBytes); writeInt(block.sizeBytes); writeString(block.sha256)
-            }
-        }
-    }
-
-    private fun DataInputStream.readUpdate(): FolderIndexUpdate {
-        val folderId = readString(); val epoch = readLong(); val previous = readLong(); val last = readLong(); val full = readBoolean()
-        return FolderIndexUpdate(folderId, epoch, previous, last, full, List(readCount()) {
-            IndexedFileRecord(
-                readString(), readString(), readLong(), readLong(), readString(), readNullableString(), readString(), readBoolean(),
-                VersionVector.fromJson(readString()), readLong(), readInt(),
-                List(readCount()) { FileBlock(readInt(), readLong(), readInt(), readString()) },
-            )
-        })
-    }
-
-    private fun DataOutputStream.writeString(value: String) = writeData(value.toByteArray(Charsets.UTF_8))
-    private fun DataInputStream.readString() = String(readData(), Charsets.UTF_8)
-    private fun DataOutputStream.writeNullableString(value: String?) { writeBoolean(value != null); if (value != null) writeString(value) }
-    private fun DataInputStream.readNullableString() = if (readBoolean()) readString() else null
-    private fun DataOutputStream.writeData(value: ByteArray) { require(value.size <= MAX_FIELD); writeInt(value.size); write(value) }
-    private fun DataInputStream.readData() = ByteArray(readInt().also { require(it in 0..MAX_FIELD) }).also(::readFully)
-    private fun DataOutputStream.writeCount(value: Int) { require(value in 0..MAX_ITEMS); writeInt(value) }
-    private fun DataInputStream.readCount() = readInt().also { require(it in 0..MAX_ITEMS) }
-
-    private const val MAGIC = 0x53444D53
-    private const val VERSION = 2
-    private const val METADATA = 1
-    private const val CATALOG = 2
-    private const val INDEX_BATCH = 3
-    private const val TRANSFER_PLAN = 4
-    private const val PHASE_DONE = 5
-    private const val ERROR = 127
-    private const val MAX_ITEMS = 50_000
-    private const val MAX_REQUESTS = 1_000_000
-    private const val MAX_FIELD = 16 * 1024 * 1024
+    fun decode(bytes: ByteArray): MeshSessionMessage =
+        com.syncdroid.shared.protocol.MeshSessionWireCodec.decode(bytes)
 }
 
 class MeshFileSyncSession(

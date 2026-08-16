@@ -164,12 +164,7 @@ object CloudEncryption {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
 }
 
-data class WrappedFolderKeyTransfer(
-    val folderId: String,
-    val keyId: String,
-    val nonce: ByteArray,
-    val ciphertext: ByteArray,
-)
+typealias WrappedFolderKeyTransfer = com.syncdroid.shared.protocol.WrappedFolderKeyTransfer
 
 object PairingFolderKeyWrapper {
     fun wrap(key: FolderKeyMaterial, pairingSessionKey: ByteArray): WrappedFolderKeyTransfer {

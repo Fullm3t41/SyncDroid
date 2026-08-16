@@ -2,10 +2,11 @@ package com.syncdroid.app.mesh
 
 import com.syncdroid.app.data.ChatMessageEntity
 import com.syncdroid.app.data.SyncDroidDatabase
+import com.syncdroid.shared.protocol.canonicalChatPayload
+import com.syncdroid.shared.protocol.eventIdFor
+import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.security.PublicKey
-import java.security.Signature
 import java.util.Base64
 
 data class MeshChatMessage(
@@ -23,15 +24,10 @@ data class MeshChatMessage(
         createdAtMillis = createdAtMillis,
     )
 
-    fun hasValidMessageId(): Boolean = messageId == chatMessageId(canonicalPayload())
+    fun hasValidMessageId(): Boolean = messageId == eventIdFor(canonicalPayload())
 
-    fun verifySignature(publicKey: PublicKey): Boolean = runCatching {
-        Signature.getInstance("SHA256withECDSA").run {
-            initVerify(publicKey)
-            update(canonicalPayload())
-            verify(Base64.getDecoder().decode(signatureBase64))
-        }
-    }.getOrDefault(false)
+    fun verifySignature(publicKey: PublicKey): Boolean =
+        verifyEcdsaSha256(publicKey, canonicalPayload(), signatureBase64)
 
     companion object {
         fun create(
@@ -47,7 +43,7 @@ data class MeshChatMessage(
             }
             val payload = canonicalChatPayload(groupId, signer.deviceId, cleanBody, createdAtMillis)
             return MeshChatMessage(
-                messageId = chatMessageId(payload),
+                messageId = eventIdFor(payload),
                 groupId = groupId,
                 authorDeviceId = signer.deviceId,
                 body = cleanBody,
@@ -111,23 +107,6 @@ private fun MeshChatMessage.toEntity() = ChatMessageEntity(
     createdAtMillis = createdAtMillis,
     signatureBase64 = signatureBase64,
 )
-
-private fun canonicalChatPayload(
-    groupId: String,
-    authorDeviceId: String,
-    body: String,
-    createdAtMillis: Long,
-): ByteArray = canonicalBytes {
-    string("syncdroid-chat-v1")
-    string(groupId)
-    string(authorDeviceId)
-    string(body)
-    int64(createdAtMillis)
-}
-
-private fun chatMessageId(payload: ByteArray): String = Base64.getUrlEncoder()
-    .withoutPadding()
-    .encodeToString(MessageDigest.getInstance("SHA-256").digest(payload))
 
 private const val MAX_CHAT_BODY_BYTES = 4_000
 private const val TRUSTED = "TRUSTED"

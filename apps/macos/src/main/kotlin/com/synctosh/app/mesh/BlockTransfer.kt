@@ -1,13 +1,15 @@
 package com.synctosh.app.mesh
 
+import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.sync.ContentBlockManifestBuilder
+import com.syncdroid.shared.sync.ResumableTransferProgress
+import com.syncdroid.shared.sync.isCompatiblePartialTransfer
+import com.syncdroid.shared.sync.resumableTransferId
+import com.syncdroid.shared.sync.validateReceivedBlock
 import java.io.FileInputStream
 import java.io.RandomAccessFile
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
-import java.util.Base64
-import java.util.BitSet
 
 data class BlockManifest(
     val folderId: String,
@@ -34,29 +36,10 @@ data class PartialTransfer(
 object BlockManifestBuilder {
     fun build(version: FileVersion, source: Path): BlockManifest {
         require(!version.deleted && Files.isRegularFile(source)) { "Cannot build blocks for an unavailable file" }
-        val blockSize = adaptiveBlockSize(version.sizeBytes)
-        val wholeDigest = MessageDigest.getInstance("SHA-256")
-        val blocks = mutableListOf<FileBlock>()
-        Files.newInputStream(source).buffered().use { input ->
-            val buffer = ByteArray(blockSize)
-            var offset = 0L
-            var index = 0
-            while (true) {
-                var count = 0
-                while (count < buffer.size) {
-                    val read = input.read(buffer, count, buffer.size - count)
-                    if (read < 0) break
-                    if (read > 0) count += read
-                }
-                if (count == 0) break
-                wholeDigest.update(buffer, 0, count)
-                val blockHash = MessageDigest.getInstance("SHA-256").digest(buffer.copyOf(count)).toHex()
-                blocks += FileBlock(index++, offset, count, blockHash)
-                offset += count
-            }
-            require(offset == version.sizeBytes) { "File changed size while its block manifest was created" }
+        val content = Files.newInputStream(source).buffered().use { input ->
+            ContentBlockManifestBuilder.build(version.sizeBytes, input)
         }
-        require(wholeDigest.digest().toHex().equals(version.contentSha256, true)) {
+        require(content.contentSha256.equals(version.contentSha256, true)) {
             "File changed while its block manifest was created"
         }
         return BlockManifest(
@@ -66,21 +49,14 @@ object BlockManifestBuilder {
             version.sizeBytes,
             version.modifiedAtMillis,
             version.contentSha256.lowercase(),
-            blockSize,
-            blocks,
+            content.blockSizeBytes,
+            content.blocks.map { FileBlock(it.index, it.offsetBytes, it.sizeBytes, it.sha256) },
         )
     }
 
-    fun adaptiveBlockSize(fileSize: Long): Int {
-        var size = MIN_BLOCK_SIZE
-        while (size < MAX_BLOCK_SIZE && fileSize / size > TARGET_BLOCK_COUNT) size *= 2
-        return size
-    }
+    fun adaptiveBlockSize(fileSize: Long): Int = ContentBlockManifestBuilder.adaptiveBlockSize(fileSize)
 
-    const val RESUMABLE_THRESHOLD_BYTES = 1L * 1024 * 1024
-    private const val MIN_BLOCK_SIZE = 128 * 1024
-    private const val MAX_BLOCK_SIZE = 16 * 1024 * 1024
-    private const val TARGET_BLOCK_COUNT = 1_000
+    const val RESUMABLE_THRESHOLD_BYTES = ContentBlockManifestBuilder.RESUMABLE_THRESHOLD_BYTES
 }
 
 class ResumableBlockReceiver(
@@ -92,18 +68,15 @@ class ResumableBlockReceiver(
 
     fun missingBlocks(manifest: BlockManifest): List<Int> {
         val state = loadOrCreate(manifest)
-        val received = decodeBits(state.receivedBlocksBase64)
-        val missing = manifest.blocks.map(FileBlock::index).filterNot(received::get)
+        val progress = ResumableTransferProgress(state.receivedBlocksBase64)
+        val missing = progress.missingBlocks(manifest.blocks)
         if (missing.isEmpty()) complete(manifest, Path.of(state.temporaryPath))
         return missing
     }
 
     fun acceptBlock(manifest: BlockManifest, blockIndex: Int, data: ByteArray): Boolean {
         val block = manifest.blocks.firstOrNull { it.index == blockIndex } ?: error("Unknown block index")
-        require(data.size == block.sizeBytes) { "Received block has the wrong size" }
-        require(MessageDigest.getInstance("SHA-256").digest(data).toHex().equals(block.sha256, true)) {
-            "Received block hash does not match its manifest"
-        }
+        validateReceivedBlock(block, blockIndex, data)
         val state = loadOrCreate(manifest)
         RandomAccessFile(state.temporaryPath, "rw").use { file ->
             file.setLength(manifest.sizeBytes)
@@ -111,11 +84,11 @@ class ResumableBlockReceiver(
             file.write(data)
             file.fd.sync()
         }
-        val received = decodeBits(state.receivedBlocksBase64).apply { set(blockIndex) }
+        val progress = ResumableTransferProgress(state.receivedBlocksBase64).record(blockIndex)
         store.upsertPartialTransfer(
-            state.copy(receivedBlocksBase64 = encodeBits(received), updatedAtMillis = System.currentTimeMillis()),
+            state.copy(receivedBlocksBase64 = progress.receivedBlocksBase64, updatedAtMillis = System.currentTimeMillis()),
         )
-        if (manifest.blocks.any { !received.get(it.index) }) return false
+        if (!progress.isComplete(manifest.blocks)) return false
         complete(manifest, Path.of(state.temporaryPath))
         return true
     }
@@ -124,16 +97,14 @@ class ResumableBlockReceiver(
         store.partialTransfer(manifest.folderId, manifest.fileId, manifest.contentSha256)?.let { existing ->
             val path = runCatching { Path.of(existing.temporaryPath).toAbsolutePath().normalize() }.getOrNull()
             val safe = path != null && path.startsWith(temporaryDirectory.toAbsolutePath().normalize())
-            if (safe && existing.totalSizeBytes == manifest.sizeBytes &&
-                existing.blockSizeBytes == manifest.blockSizeBytes && Files.isRegularFile(path)
+            if (safe && isCompatiblePartialTransfer(
+                    manifest.sizeBytes, manifest.blockSizeBytes, existing.totalSizeBytes, existing.blockSizeBytes,
+                ) && Files.isRegularFile(path)
             ) return existing
             store.deletePartialTransfer(manifest.folderId, manifest.fileId, manifest.contentSha256)
             if (safe) Files.deleteIfExists(path)
         }
-        val transferId = MessageDigest.getInstance("SHA-256").digest(
-            "${manifest.folderId}\u0000${manifest.fileId}\u0000${manifest.contentSha256}"
-                .toByteArray(StandardCharsets.UTF_8),
-        ).toHex()
+        val transferId = resumableTransferId(manifest.folderId, manifest.fileId, manifest.contentSha256)
         val temporary = temporaryDirectory.resolve("$transferId.part").toAbsolutePath().normalize()
         require(temporary.startsWith(temporaryDirectory.toAbsolutePath().normalize()))
         RandomAccessFile(temporary.toFile(), "rw").use { it.setLength(manifest.sizeBytes) }
@@ -144,7 +115,7 @@ class ResumableBlockReceiver(
             temporary.toString(),
             manifest.sizeBytes,
             manifest.blockSizeBytes,
-            encodeBits(BitSet()),
+            ResumableTransferProgress().receivedBlocksBase64,
             System.currentTimeMillis(),
         ).also(store::upsertPartialTransfer)
     }
@@ -162,9 +133,6 @@ class ResumableBlockReceiver(
         store.deletePartialTransfer(manifest.folderId, manifest.fileId, manifest.contentSha256)
         Files.deleteIfExists(temporary)
     }
-
-    private fun encodeBits(bits: BitSet): String = Base64.getEncoder().encodeToString(bits.toByteArray())
-    private fun decodeBits(value: String): BitSet = BitSet.valueOf(Base64.getDecoder().decode(value))
 }
 
 class ResumableBlockPeerClient(

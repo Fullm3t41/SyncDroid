@@ -16,8 +16,8 @@ android {
         applicationId = "com.syncdroid.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -59,6 +59,9 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":mesh-protocol"))
+    implementation(project(":sync-core"))
+
     implementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(platform(libs.androidx.compose.bom))
 

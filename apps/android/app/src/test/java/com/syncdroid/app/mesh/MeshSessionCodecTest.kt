@@ -5,6 +5,8 @@ import com.syncdroid.app.sync.FileBlock
 import com.syncdroid.app.sync.FolderIndexUpdate
 import com.syncdroid.app.sync.IndexedFileRecord
 import com.syncdroid.app.sync.VersionVector
+import com.syncdroid.shared.protocol.MeshSessionMessage
+import com.syncdroid.shared.protocol.PairingCompletionMessage
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test

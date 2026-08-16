@@ -647,7 +647,7 @@ fun SettingsScreen(
                         SettingsActionRow(
                             icon = Icons.Rounded.Info,
                             title = "About SyncTosh",
-                            detail = "Local-first · version 0.1.1",
+                            detail = "Local-first · version 0.1.2",
                             onClick = { onFeatureRequested("About SyncTosh") },
                         )
                     }

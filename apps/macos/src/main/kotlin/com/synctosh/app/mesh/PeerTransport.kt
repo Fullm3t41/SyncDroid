@@ -1,7 +1,5 @@
 package com.synctosh.app.mesh
 
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -23,6 +21,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.syncdroid.shared.protocol.PairingCompletionMessage
 
 data class PeerTlsIdentity(val publicKeySpki: ByteArray)
 
@@ -166,51 +165,12 @@ class PairingConnectionProtocol(
         ?: error("Unexpected pairing message order")
 }
 
-sealed interface PairingCompletionMessage {
-    data class Complete(val groupId: String, val groupName: String, val meshBundle: ByteArray) : PairingCompletionMessage
-    data object Ack : PairingCompletionMessage
-}
-
 object PairingCompletionCodec {
-    fun encode(message: PairingCompletionMessage): ByteArray = ByteArrayOutputStream().use { bytes ->
-        DataOutputStream(bytes).use { output ->
-            output.writeInt(MAGIC)
-            when (message) {
-                PairingCompletionMessage.Ack -> output.writeByte(ACK)
-                is PairingCompletionMessage.Complete -> {
-                    output.writeByte(COMPLETE); output.writeString(message.groupId); output.writeString(message.groupName)
-                    output.writeData(message.meshBundle)
-                    output.writeInt(0) // No folder keys exist before folder-sync integration.
-                }
-            }
-        }
-        bytes.toByteArray()
-    }
+    fun encode(message: PairingCompletionMessage): ByteArray =
+        com.syncdroid.shared.protocol.PairingCompletionWireCodec.encode(message)
 
-    fun decode(bytes: ByteArray): PairingCompletionMessage = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-        require(input.readInt() == MAGIC)
-        val message = when (input.readUnsignedByte()) {
-            ACK -> PairingCompletionMessage.Ack
-            COMPLETE -> {
-                val groupId = input.readString(); val groupName = input.readString(); val bundle = input.readData()
-                val keyCount = input.readInt().also { require(it in 0..10_000) }
-                repeat(keyCount) { input.readString(); input.readString(); input.readData(); input.readData() }
-                PairingCompletionMessage.Complete(groupId, groupName, bundle)
-            }
-            else -> error("Unknown pairing completion")
-        }
-        require(input.available() == 0)
-        message
-    }
-
-    private fun DataOutputStream.writeString(value: String) = writeData(value.toByteArray(Charsets.UTF_8))
-    private fun DataInputStream.readString() = String(readData(), Charsets.UTF_8)
-    private fun DataOutputStream.writeData(value: ByteArray) { require(value.size <= MAX_DATA); writeInt(value.size); write(value) }
-    private fun DataInputStream.readData() = ByteArray(readInt().also { require(it in 0..MAX_DATA) }).also(::readFully)
-    private const val MAGIC = 0x53445043
-    private const val COMPLETE = 1
-    private const val ACK = 2
-    private const val MAX_DATA = 16 * 1024 * 1024
+    fun decode(bytes: ByteArray): PairingCompletionMessage =
+        com.syncdroid.shared.protocol.PairingCompletionWireCodec.decode(bytes)
 }
 
 private const val MAX_MESSAGE_BYTES = 16 * 1024 * 1024

@@ -1,11 +1,11 @@
 package com.syncdroid.app.mesh
 
 import com.syncdroid.app.sync.VersionVector
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
-import java.security.MessageDigest
+import com.syncdroid.shared.protocol.canonicalFolderAnnouncementPayload
+import com.syncdroid.shared.protocol.eventIdFor
+import com.syncdroid.shared.protocol.legacyFolderAnnouncementPayload
+import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import java.security.PublicKey
-import java.security.Signature
 import java.util.Base64
 import java.util.UUID
 
@@ -21,27 +21,22 @@ data class FolderAnnouncement(
     val createdAtMillis: Long,
     val signatureBase64: String,
 ) {
-    fun canonicalPayload(): ByteArray = canonicalFolderPayloadV2(
+    fun canonicalPayload(): ByteArray = canonicalFolderAnnouncementPayload(
         groupId = groupId,
         folderId = folderId,
         displayName = displayName,
         includePatterns = includePatterns,
         excludePatterns = excludePatterns,
         signerDeviceId = signerDeviceId,
-        version = version,
+        versionJson = version.toJson(),
         createdAtMillis = createdAtMillis,
     )
 
     fun hasValidEventId(): Boolean = payloadForValidation() != null
 
-    fun verifySignature(signerPublicKey: PublicKey): Boolean = runCatching {
-        val payload = requireNotNull(payloadForValidation()) { "Event ID does not match its payload" }
-        Signature.getInstance(FOLDER_SIGNATURE_ALGORITHM).run {
-            initVerify(signerPublicKey)
-            update(payload)
-            verify(Base64.getDecoder().decode(signatureBase64))
-        }
-    }.getOrDefault(false)
+    fun verifySignature(signerPublicKey: PublicKey): Boolean = payloadForValidation()?.let { payload ->
+        verifyEcdsaSha256(signerPublicKey, payload, signatureBase64)
+    } ?: false
 
     companion object {
         fun create(
@@ -57,18 +52,18 @@ data class FolderAnnouncement(
             require(displayName.isNotBlank()) { "Folder name cannot be blank" }
             val normalizedIncludes = normalizePatterns(includePatterns)
             val normalizedExcludes = normalizePatterns(excludePatterns)
-            val payload = canonicalFolderPayloadV2(
+            val payload = canonicalFolderAnnouncementPayload(
                 groupId,
                 folderId,
                 displayName.trim(),
                 normalizedIncludes,
                 normalizedExcludes,
                 signer.deviceId,
-                version,
+                version.toJson(),
                 createdAtMillis,
             )
             return FolderAnnouncement(
-                eventId = folderEventIdFor(payload),
+                eventId = eventIdFor(payload),
                 groupId = groupId,
                 folderId = folderId,
                 displayName = displayName.trim(),
@@ -84,18 +79,18 @@ data class FolderAnnouncement(
 
     private fun payloadForValidation(): ByteArray? {
         val current = canonicalPayload()
-        if (eventId == folderEventIdFor(current)) return current
-        val legacy = legacyCanonicalFolderPayload(
+        if (eventId == eventIdFor(current)) return current
+        val legacy = legacyFolderAnnouncementPayload(
             groupId,
             folderId,
             displayName,
             includePatterns,
             excludePatterns,
             signerDeviceId,
-            version,
+            version.toJson(),
             createdAtMillis,
         )
-        return legacy.takeIf { eventId == folderEventIdFor(it) }
+        return legacy.takeIf { eventId == eventIdFor(it) }
     }
 }
 
@@ -104,59 +99,3 @@ private fun normalizePatterns(patterns: List<String>): List<String> = patterns
     .filter(String::isNotEmpty)
     .distinct()
     .sorted()
-
-private fun canonicalFolderPayloadV2(
-    groupId: String,
-    folderId: String,
-    displayName: String,
-    includePatterns: List<String>,
-    excludePatterns: List<String>,
-    signerDeviceId: String,
-    version: VersionVector,
-    createdAtMillis: Long,
-): ByteArray = canonicalBytes {
-    string("syncdroid-folder-announcement-v2")
-    string(groupId)
-    string(folderId)
-    string(displayName)
-    string(signerDeviceId)
-    int64(createdAtMillis)
-    string(version.toJson())
-    strings(includePatterns)
-    strings(excludePatterns)
-}
-
-private fun legacyCanonicalFolderPayload(
-    groupId: String,
-    folderId: String,
-    displayName: String,
-    includePatterns: List<String>,
-    excludePatterns: List<String>,
-    signerDeviceId: String,
-    version: VersionVector,
-    createdAtMillis: Long,
-): ByteArray = ByteArrayOutputStream().use { bytes ->
-    DataOutputStream(bytes).use { output ->
-        output.writeUTF("syncdroid-folder-announcement-v1")
-        output.writeUTF(groupId)
-        output.writeUTF(folderId)
-        output.writeUTF(displayName)
-        output.writeUTF(signerDeviceId)
-        output.writeLong(createdAtMillis)
-        output.writeUTF(version.toJson())
-        output.writeStringList(includePatterns)
-        output.writeStringList(excludePatterns)
-    }
-    bytes.toByteArray()
-}
-
-private fun DataOutputStream.writeStringList(values: List<String>) {
-    writeInt(values.size)
-    values.forEach(::writeUTF)
-}
-
-private fun folderEventIdFor(payload: ByteArray): String = Base64.getUrlEncoder()
-    .withoutPadding()
-    .encodeToString(MessageDigest.getInstance("SHA-256").digest(payload))
-
-private const val FOLDER_SIGNATURE_ALGORITHM = "SHA256withECDSA"

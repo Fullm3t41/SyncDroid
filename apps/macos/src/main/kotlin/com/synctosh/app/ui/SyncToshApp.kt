@@ -368,7 +368,7 @@ fun SyncToshApp(
                                 "Google Drive and OneDrive will use the shared encrypted cloud format after local peer sync is interoperable."
                             "Background operation" ->
                                 "Closing the window keeps SyncTosh in the menu bar. While hidden, it uses the interval and discovery window selected in Power & discovery. Reopen it from the menu-bar icon for continuous discovery."
-                            else -> "SyncTosh 0.1.1 · macOS preview"
+                            else -> "SyncTosh 0.1.2 · macOS preview"
                         },
                     )
                 },

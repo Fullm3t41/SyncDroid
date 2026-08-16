@@ -1,5 +1,10 @@
 package com.synctosh.app.mesh
 
+import com.syncdroid.shared.sync.FileSyncState
+import com.syncdroid.shared.sync.decideFileSync as decideSharedFileSync
+import com.syncdroid.shared.sync.normalizeRelativePath
+import com.syncdroid.shared.sync.planIndexExport
+import com.syncdroid.shared.sync.validateFolderIndexUpdate
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -7,8 +12,6 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 import kotlin.io.path.invariantSeparatorsPathString
-
-enum class FileSyncAction { Nothing, DownloadRemote, SendLocal, Conflict }
 
 data class FileSyncPlan(
     val action: FileSyncAction,
@@ -20,28 +23,11 @@ data class FileSyncPlan(
 )
 
 fun decideFileSync(local: FileVersion?, remote: RemoteFileVersion): Pair<FileSyncAction, String> {
-    if (local == null) return if (remote.deleted) {
-        FileSyncAction.Nothing to "Both sides have no live file"
-    } else {
-        FileSyncAction.DownloadRemote to "File is new on the remote device"
-    }
-    if (local.deleted == remote.deleted && local.contentSha256.equals(remote.contentSha256, true)) {
-        return FileSyncAction.Nothing to "File content is already identical"
-    }
-    return when (local.version.relationTo(remote.version)) {
-        CausalRelation.Before -> FileSyncAction.DownloadRemote to "Remote file causally follows local"
-        CausalRelation.After -> FileSyncAction.SendLocal to "Local file causally follows remote"
-        CausalRelation.Equal -> FileSyncAction.Conflict to "Equal vectors describe different content"
-        CausalRelation.Concurrent -> when {
-            remote.previousContentSha256 != null &&
-                remote.previousContentSha256.equals(local.contentSha256, true) ->
-                FileSyncAction.DownloadRemote to "Remote content proves it descends from local"
-            local.previousContentSha256 != null &&
-                local.previousContentSha256.equals(remote.contentSha256, true) ->
-                FileSyncAction.SendLocal to "Local content proves it descends from remote"
-            else -> FileSyncAction.Conflict to "Both devices changed this file independently"
-        }
-    }
+    val decision = decideSharedFileSync(
+        local = local?.let { FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, it.version) },
+        remote = FileSyncState(remote.deleted, remote.contentSha256, remote.previousContentSha256, remote.version),
+    )
+    return decision.action to decision.reason
 }
 
 class FileSyncEngine(
@@ -75,20 +61,22 @@ class FileSyncEngine(
             val local = store.folderIndexState(folder.folderId, identity.deviceId) ?: return@mapNotNull null
             val root = configuredRoot(folder.folderId) ?: return@mapNotNull null
             val peer = peerByFolder[folder.folderId]
-            val full = peer == null || peer.knownPeerIndexEpoch != local.indexEpoch ||
-                peer.knownPeerReceivedSequence > local.maxSequence
-            val previous = if (full) 0 else peer.knownPeerReceivedSequence
-            if (!full && previous == local.maxSequence) return@mapNotNull null
-            val versions = (if (full) store.fileVersions(folder.folderId) else {
-                store.fileVersionsAfter(folder.folderId, previous)
+            val range = planIndexExport(
+                local.indexEpoch,
+                local.maxSequence,
+                peer?.knownPeerIndexEpoch,
+                peer?.knownPeerReceivedSequence,
+            ) ?: return@mapNotNull null
+            val versions = (if (range.fullIndex) store.fileVersions(folder.folderId) else {
+                store.fileVersionsAfter(folder.folderId, range.previousSequence)
             }).sortedBy(FileVersion::localSequence)
             require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one session" }
             FolderIndexUpdate(
                 folder.folderId,
                 local.indexEpoch,
-                previous,
-                local.maxSequence,
-                full,
+                range.previousSequence,
+                range.lastSequence,
+                range.fullIndex,
                 versions.map { it.toIndexedRecord(root) },
             )
         }
@@ -97,7 +85,7 @@ class FileSyncEngine(
     fun receiveIndexes(remoteDeviceId: String, updates: List<FolderIndexUpdate>): List<FileSyncPlan> {
         val plans = mutableListOf<FileSyncPlan>()
         updates.forEach { update ->
-            validate(update)
+            validateFolderIndexUpdate(update)
             require(store.folders(profile.groupId, identity.deviceId).any { it.folderId == update.folderId }) {
                 "Peer sent an index for another mesh"
             }
@@ -105,7 +93,11 @@ class FileSyncEngine(
             val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)
             update.files.map { it.toRemote(update.folderId, remoteDeviceId) }.forEach { remote ->
                 val local = localByPath[remote.relativePath]
-                val (action, reason) = decideFileSync(local, remote)
+                val (action, reason) = if (store.activeSyncException(remote.folderId, remote.relativePath)) {
+                    FileSyncAction.Nothing to "This device has an active overwrite-only exception"
+                } else {
+                    decideFileSync(local, remote)
+                }
                 if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
                 plans += FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
             }
@@ -116,7 +108,11 @@ class FileSyncEngine(
                 val key = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
                 if (key in receivedKeys) return@forEach
                 val local = store.fileVersion(folder.folderId, remote.relativePath)
-                val (action, reason) = decideFileSync(local, remote)
+                val (action, reason) = if (store.activeSyncException(remote.folderId, remote.relativePath)) {
+                    FileSyncAction.Nothing to "This device has an active overwrite-only exception"
+                } else {
+                    decideFileSync(local, remote)
+                }
                 if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
                 plans += FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
             }
@@ -213,28 +209,6 @@ class FileSyncEngine(
         }
     }
 
-    private fun validate(update: FolderIndexUpdate) {
-        require(update.indexEpoch != 0L && update.previousSequence >= 0 && update.lastSequence >= update.previousSequence)
-        var sequence = update.previousSequence
-        val paths = mutableSetOf<String>()
-        update.files.forEach { file ->
-            require(file.sequence > sequence && file.sequence <= update.lastSequence) { "Index sequences are not increasing" }
-            sequence = file.sequence
-            require(paths.add(normalizedRelativePath(file.relativePath))) { "Index contains a duplicate path" }
-            require(file.fileId.isNotBlank() && file.originDeviceId.isNotBlank())
-            require(file.sizeBytes >= 0 && file.modifiedAtMillis >= 0)
-            require(file.deleted || file.contentSha256.matches(HASH_PATTERN)) { "Invalid content hash" }
-            require(file.previousContentSha256 == null || file.previousContentSha256.matches(HASH_PATTERN))
-            var expectedOffset = 0L
-            file.blocks.forEachIndexed { index, block ->
-                require(block.index == index && block.offsetBytes == expectedOffset && block.sizeBytes >= 0)
-                require(block.sha256.matches(HASH_PATTERN)); expectedOffset += block.sizeBytes
-            }
-            if (file.blocks.isNotEmpty()) require(file.blockSizeBytes > 0 && (file.deleted || expectedOffset == file.sizeBytes))
-        }
-        if (update.files.isNotEmpty()) require(sequence == update.lastSequence) { "Index last sequence does not match its records" }
-    }
-
     private fun FileVersion.toIndexedRecord(root: Path): IndexedFileRecord {
         val manifest = if (!deleted && sizeBytes >= BlockManifestBuilder.RESUMABLE_THRESHOLD_BYTES) {
             store.localBlockManifest(this) ?: BlockManifestBuilder.build(this, root.resolve(relativePath)).also {
@@ -259,7 +233,6 @@ class FileSyncEngine(
 
     private companion object {
         const val MAX_INDEX_FILES = 50_000
-        val HASH_PATTERN = Regex("[a-fA-F0-9]{64}")
     }
 }
 
@@ -322,10 +295,7 @@ private fun globMatches(rawPattern: String, path: String): Boolean {
 }
 
 fun normalizedRelativePath(path: String): String {
-    val normalized = path.replace('\\', '/').trim('/')
-    require(normalized.isNotBlank() && normalized.length <= 4_096) { "Invalid relative path" }
-    require(normalized.split('/').none { it.isBlank() || it == "." || it == ".." }) { "Invalid relative path" }
-    return normalized
+    return normalizeRelativePath(path)
 }
 
 fun sha256Hex(input: java.io.InputStream): String {

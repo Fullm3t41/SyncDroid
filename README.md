@@ -14,12 +14,19 @@ Each existing application keeps its own Gradle wrapper so it can be built and te
 
 ## Shared boundaries
 
-- `shared/mesh-protocol` owns canonical payloads, signatures, wire codecs, and compatibility rules.
-- `shared/sync-core` owns version vectors, reconciliation, conflict decisions, hashing, and resumable transfers.
+- `shared/mesh-protocol` owns version vectors, signed event payloads, identity helpers, and all deployed mesh/pairing/session/index/transfer wire codecs shared by Android and macOS.
+- `shared/sync-core` owns file conflict decisions, block hashing, safe paths, index reconciliation, acknowledgements, and resumable-transfer progress.
 - `shared/desktop-ui` will hold Compose UI shared by SyncTosh and SyncDows.
 - `protocol` contains stable schemas and cross-platform compatibility fixtures.
 
-Platform projects must not independently change wire formats or synchronization decisions once those components move into `shared`.
+Golden fixtures under `protocol/fixtures` prevent either platform from silently changing shared payload or wire bytes, identifiers, hashes, or conflict outcomes.
+
+## Test the shared core
+
+```sh
+cd shared
+./gradlew test
+```
 
 ## Build SyncDroid
 
@@ -40,3 +47,5 @@ cd apps/macos
 The DMG is written beneath `apps/macos/build/compose/binaries/main/dmg`.
 
 See `docs/design-plan.md` for the Android product plan, `apps/macos/docs/design-plan.md` for the macOS plan, and `docs/cross-platform-protocol.md` for the interoperability contract.
+
+For a Windows implementation implementation notes, see [`WINDOWS_BUILD_PLAN.md`](WINDOWS_BUILD_PLAN.md).

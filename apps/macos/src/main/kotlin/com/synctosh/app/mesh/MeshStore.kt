@@ -1,5 +1,10 @@
 package com.synctosh.app.mesh
 
+import com.syncdroid.shared.sync.IndexReceiveDecision
+import com.syncdroid.shared.sync.IndexStateSnapshot
+import com.syncdroid.shared.sync.acknowledgeIndexContent
+import com.syncdroid.shared.sync.normalizeRelativePath
+import com.syncdroid.shared.sync.reconcileReceivedIndex
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
@@ -72,6 +77,21 @@ data class FolderIndexState(
     val metadataReceivedSequence: Long,
     val contentAppliedSequence: Long,
     val updatedAtMillis: Long,
+)
+
+private fun FolderIndexState.toSnapshot() = IndexStateSnapshot(
+    indexEpoch, maxSequence, metadataReceivedSequence, contentAppliedSequence,
+)
+
+data class SyncExceptionState(
+    val folderId: String,
+    val relativePath: String,
+    val active: Boolean,
+    val createdByDeviceId: String,
+    val createdAtMillis: Long,
+    val updatedAtMillis: Long,
+    val version: VersionVector,
+    val lastEventId: String,
 )
 
 data class FileConflict(
@@ -180,6 +200,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         val groupId = bundle.membershipEvents.first().groupId
         require(bundle.membershipEvents.all { it.groupId == groupId }) { "Pairing response mixes mesh groups" }
         require(bundle.folderAnnouncements.all { it.groupId == groupId }) { "Pairing response mixes folder groups" }
+        require(bundle.syncExceptionEvents.all { it.groupId == groupId }) { "Pairing response mixes exception groups" }
         require(bundle.chatMessages.all { it.groupId == groupId }) { "Pairing response mixes chat groups" }
         bundle.membershipEvents.forEach { applyMembershipLocked(bundle.groupName, it) }
         val existing = profile()
@@ -207,6 +228,9 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         bundle.folderAnnouncements
             .sortedWith(compareBy(FolderAnnouncement::createdAtMillis, FolderAnnouncement::eventId))
             .forEach(::applyFolderLocked)
+        bundle.syncExceptionEvents
+            .sortedWith(compareBy(SyncExceptionEvent::createdAtMillis, SyncExceptionEvent::eventId))
+            .forEach(::applySyncExceptionLocked)
         bundle.chatMessages
             .sortedWith(compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId))
             .forEach(::applyChatLocked)
@@ -220,8 +244,47 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             profile.groupName,
             membershipEvents(profile.groupId),
             folderAnnouncements(profile.groupId),
+            syncExceptionEvents(profile.groupId),
             chatMessages = chatMessages(profile.groupId),
         )
+    }
+
+    @Synchronized
+    fun syncExceptionEvents(groupId: String): List<SyncExceptionEvent> = connection.prepareStatement(
+        """SELECT event_id, group_id, folder_id, relative_path, active, signer_device_id,
+                  version_json, created_at_millis, signature
+           FROM sync_exception_events WHERE group_id = ? ORDER BY created_at_millis, event_id""",
+    ).use { statement ->
+        statement.setString(1, groupId)
+        statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.syncExceptionEvent()) } }
+    }
+
+    @Synchronized
+    fun activeSyncException(folderId: String, relativePath: String): Boolean = connection.prepareStatement(
+        "SELECT active FROM sync_exceptions WHERE folder_id = ? AND relative_path = ? LIMIT 1",
+    ).use { statement ->
+        statement.setString(1, folderId); statement.setString(2, normalizeRelativePath(relativePath))
+        statement.executeQuery().use { rows -> rows.next() && rows.getInt(1) != 0 }
+    }
+
+    @Synchronized
+    fun applySyncException(event: SyncExceptionEvent): Boolean = transaction { applySyncExceptionLocked(event) }
+
+    @Synchronized
+    fun recordSyncException(
+        folderId: String,
+        relativePath: String,
+        active: Boolean,
+        signer: DeviceSigner,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): SyncExceptionEvent = transaction {
+        val folder = requireNotNull(meshFolder(folderId)) { "Unknown mesh folder" }
+        val normalized = normalizeRelativePath(relativePath)
+        val existing = syncExceptionState(folderId, normalized)
+        val version = (existing?.version ?: VersionVector()).increment(signer.deviceId)
+        SyncExceptionEvent.create(
+            folder.groupId, folderId, normalized, active, signer, version, nowMillis,
+        ).also { applySyncExceptionLocked(it) }
     }
 
     @Synchronized
@@ -463,10 +526,11 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         nowMillis: Long = System.currentTimeMillis(),
     ): Boolean = transaction {
         val existing = folderIndexState(update.folderId, remoteDeviceId)
-        val epochChanged = existing != null && existing.indexEpoch != update.indexEpoch
-        if ((existing == null || epochChanged) && !update.fullIndex) return@transaction false
-        val expectedPrevious = if (update.fullIndex || epochChanged) 0L else existing?.maxSequence ?: 0L
-        if (update.previousSequence != expectedPrevious) return@transaction false
+        val decision = reconcileReceivedIndex(
+            existing?.toSnapshot(), update.indexEpoch, update.previousSequence, update.lastSequence, update.fullIndex,
+        )
+        if (decision is IndexReceiveDecision.RequiresFullIndex) return@transaction false
+        val next = (decision as IndexReceiveDecision.Accepted).next
         if (update.fullIndex) {
             connection.prepareStatement(
                 "DELETE FROM remote_file_versions WHERE folder_id = ? AND device_id = ?",
@@ -483,10 +547,10 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             FolderIndexState(
                 update.folderId,
                 remoteDeviceId,
-                update.indexEpoch,
-                update.lastSequence,
-                update.lastSequence,
-                if (epochChanged || update.fullIndex) 0 else existing?.contentAppliedSequence ?: 0,
+                next.indexEpoch,
+                next.maxSequence,
+                next.metadataReceivedSequence,
+                next.contentAppliedSequence,
                 nowMillis,
             ),
         )
@@ -516,10 +580,8 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         nowMillis: Long = System.currentTimeMillis(),
     ) = transaction {
         val state = requireNotNull(folderIndexState(folderId, remoteDeviceId)) { "Unknown remote folder index" }
-        require(remoteSequence in state.contentAppliedSequence..state.metadataReceivedSequence) {
-            "Applied acknowledgement is outside the received index range"
-        }
-        upsertFolderIndexStateLocked(state.copy(contentAppliedSequence = remoteSequence, updatedAtMillis = nowMillis))
+        val next = acknowledgeIndexContent(state.toSnapshot(), state.indexEpoch, remoteSequence)
+        upsertFolderIndexStateLocked(state.copy(contentAppliedSequence = next.contentAppliedSequence, updatedAtMillis = nowMillis))
     }
 
     @Synchronized
@@ -815,6 +877,68 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         }
     }
 
+    private fun applySyncExceptionLocked(event: SyncExceptionEvent): Boolean {
+        require(event.hasValidEventId()) { "Exception event ID does not match its payload" }
+        val folder = requireNotNull(meshFolder(event.folderId)) { "Unknown mesh folder" }
+        require(folder.groupId == event.groupId) { "Exception event belongs to a different mesh" }
+        val signer = device(event.groupId, event.signerDeviceId)
+            ?: error("Exception signer is not a mesh member")
+        require(signer.trusted) { "Exception signer is not trusted" }
+        require(event.verifySignature(decodePublicKey(signer.identityPublicKeyBase64))) {
+            "Exception signature is invalid"
+        }
+        val inserted = connection.prepareStatement(
+            """INSERT OR IGNORE INTO sync_exception_events(
+                   event_id, group_id, folder_id, relative_path, active, signer_device_id,
+                   version_json, created_at_millis, signature)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ).use {
+            it.setString(1, event.eventId); it.setString(2, event.groupId); it.setString(3, event.folderId)
+            it.setString(4, event.relativePath); it.setInt(5, if (event.active) 1 else 0)
+            it.setString(6, event.signerDeviceId); it.setString(7, event.version.toJson())
+            it.setLong(8, event.createdAtMillis); it.setString(9, event.signatureBase64)
+            it.executeUpdate() > 0
+        }
+        if (!inserted) return false
+        val existing = syncExceptionState(event.folderId, event.relativePath)
+        val replaces = existing == null || when (existing.version.relationTo(event.version)) {
+            CausalRelation.Before -> true
+            CausalRelation.After -> false
+            CausalRelation.Equal, CausalRelation.Concurrent -> event.eventId > existing.lastEventId
+        }
+        val merged = (existing?.version ?: VersionVector()).merge(event.version)
+        val resolvedActive = if (replaces) event.active else requireNotNull(existing).active
+        connection.prepareStatement(
+            """INSERT INTO sync_exceptions(
+                   folder_id, relative_path, active, created_by_device_id, created_at_millis,
+                   updated_at_millis, version_json, last_event_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(folder_id, relative_path) DO UPDATE SET
+                   active = excluded.active, updated_at_millis = excluded.updated_at_millis,
+                   version_json = excluded.version_json, last_event_id = excluded.last_event_id""",
+        ).use {
+            it.setString(1, event.folderId); it.setString(2, event.relativePath)
+            it.setInt(3, if (resolvedActive) 1 else 0)
+            it.setString(4, existing?.createdByDeviceId ?: event.signerDeviceId)
+            it.setLong(5, existing?.createdAtMillis ?: event.createdAtMillis)
+            it.setLong(6, maxOf(existing?.updatedAtMillis ?: 0, event.createdAtMillis))
+            it.setString(7, merged.toJson())
+            it.setString(8, if (replaces) event.eventId else requireNotNull(existing).lastEventId)
+            it.executeUpdate()
+        }
+        return true
+    }
+
+    private fun syncExceptionState(folderId: String, relativePath: String): SyncExceptionState? =
+        connection.prepareStatement(
+            """SELECT folder_id, relative_path, active, created_by_device_id, created_at_millis,
+                      updated_at_millis, version_json, last_event_id
+               FROM sync_exceptions WHERE folder_id = ? AND relative_path = ? LIMIT 1""",
+        ).use { statement ->
+            statement.setString(1, folderId); statement.setString(2, relativePath)
+            statement.executeQuery().use { rows -> if (rows.next()) rows.syncExceptionState() else null }
+        }
+
     private fun upsertBinding(
         folderId: String,
         deviceId: String,
@@ -1063,12 +1187,27 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                     author_device_id TEXT NOT NULL, body TEXT NOT NULL,
                     created_at_millis INTEGER NOT NULL, signature TEXT NOT NULL)""",
             )
+            statement.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS sync_exception_events(
+                    event_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, folder_id TEXT NOT NULL,
+                    relative_path TEXT NOT NULL, active INTEGER NOT NULL,
+                    signer_device_id TEXT NOT NULL, version_json TEXT NOT NULL,
+                    created_at_millis INTEGER NOT NULL, signature TEXT NOT NULL)""",
+            )
+            statement.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS sync_exceptions(
+                    folder_id TEXT NOT NULL, relative_path TEXT NOT NULL, active INTEGER NOT NULL,
+                    created_by_device_id TEXT NOT NULL, created_at_millis INTEGER NOT NULL,
+                    updated_at_millis INTEGER NOT NULL, version_json TEXT NOT NULL,
+                    last_event_id TEXT NOT NULL, PRIMARY KEY(folder_id, relative_path))""",
+            )
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_versions_sequence ON file_versions(folder_id, local_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_remote_file_versions_sequence ON remote_file_versions(folder_id, device_id, remote_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_created ON file_history(created_at_millis)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_recovery ON file_history(recoverable_until_millis)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_chat_messages_group ON chat_messages(group_id, created_at_millis, message_id)")
-            statement.executeUpdate("UPDATE schema_info SET version = 5 WHERE version < 5")
+            statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_sync_exception_events_group ON sync_exception_events(group_id, created_at_millis, event_id)")
+            statement.executeUpdate("UPDATE schema_info SET version = 6 WHERE version < 6")
         }
     }
 
@@ -1105,6 +1244,14 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     )
     private fun ResultSet.folderIndexState() = FolderIndexState(
         getString(1), getString(2), getLong(3), getLong(4), getLong(5), getLong(6), getLong(7),
+    )
+    private fun ResultSet.syncExceptionEvent() = SyncExceptionEvent(
+        getString(1), getString(2), getString(3), getString(4), getInt(5) != 0,
+        getString(6), VersionVector.fromJson(getString(7)), getLong(8), getString(9),
+    )
+    private fun ResultSet.syncExceptionState() = SyncExceptionState(
+        getString(1), getString(2), getInt(3) != 0, getString(4), getLong(5), getLong(6),
+        VersionVector.fromJson(getString(7)), getString(8),
     )
     private fun ResultSet.fileConflict() = FileConflict(
         getString(1), getString(2), getString(3), getString(4), getString(5), getString(6), getLong(7),

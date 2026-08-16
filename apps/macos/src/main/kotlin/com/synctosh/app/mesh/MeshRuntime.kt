@@ -1,5 +1,6 @@
 package com.synctosh.app.mesh
 
+import com.syncdroid.shared.protocol.PairingCompletionMessage
 import com.synctosh.app.model.MeshPeer
 import com.synctosh.app.platform.AppPreferences
 import java.io.Closeable

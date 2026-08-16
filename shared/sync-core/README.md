@@ -1,5 +1,5 @@
 # Synchronization core
 
-Future home of version vectors, index reconciliation, conflict classification, file history, content hashing, block manifests, and resumable-transfer decisions.
+The shared synchronization core owns file-level conflict classification, parent-content-hash resolution, content-block hashing, adaptive block sizing, safe relative-path normalization, index reconciliation, acknowledgement bounds, index export ranges, index-record validation, and resumable-transfer progress.
 
-Filesystem access, protected identity storage, networking, notifications, and operating-system integrations remain platform adapters.
+Room/SQLite persistence, temporary-file access, atomic application, networking, notifications, and operating-system integrations remain platform adapters.

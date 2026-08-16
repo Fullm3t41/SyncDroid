@@ -182,6 +182,31 @@ class MeshStoreTest {
         }
     }
 
+    @Test
+    fun signedOverwriteOnlyExceptionsReplicateAndCanBeUndone() {
+        val directory = Files.createTempDirectory("synctosh-exception-test")
+        val signer = signer()
+        MeshStore(directory.resolve("source.db")).use { source ->
+            val profile = source.createMesh("Home mesh", "Mac", signer)
+            val folder = signedFolderAnnouncement(profile.groupId, "Game saves", listOf("*.sav"), emptyList(), signer)
+            source.importBundle(MeshStateBundle(profile.groupName, source.membershipEvents(profile.groupId), listOf(folder)))
+            val excluded = source.recordSyncException(folder.folderId, "save\\main.sav", true, signer, 500)
+            assertTrue(excluded.hasValidEventId())
+            assertTrue(source.activeSyncException(folder.folderId, "save/main.sav"))
+
+            MeshStore(directory.resolve("destination.db")).use { destination ->
+                destination.importBundle(
+                    MeshWireCodec.decode(MeshWireCodec.encode(source.exportBundle())),
+                    requiredLocalDeviceId = signer.deviceId,
+                )
+                assertTrue(destination.activeSyncException(folder.folderId, "save/main.sav"))
+            }
+
+            source.recordSyncException(folder.folderId, "save/main.sav", false, signer, 600)
+            assertEquals(false, source.activeSyncException(folder.folderId, "save/main.sav"))
+        }
+    }
+
     private fun legacyCreatorEvent(
         groupId: String,
         displayName: String,

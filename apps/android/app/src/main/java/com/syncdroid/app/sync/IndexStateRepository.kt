@@ -2,6 +2,10 @@ package com.syncdroid.app.sync
 
 import com.syncdroid.app.data.FolderIndexStateEntity
 import com.syncdroid.app.data.SyncDao
+import com.syncdroid.shared.sync.IndexReceiveDecision
+import com.syncdroid.shared.sync.IndexStateSnapshot
+import com.syncdroid.shared.sync.acknowledgeIndexContent
+import com.syncdroid.shared.sync.reconcileReceivedIndex
 
 data class FolderIndexSummary(
     val folderId: String,
@@ -30,21 +34,20 @@ class IndexStateRepository(private val syncDao: SyncDao) {
         fullIndex: Boolean,
         nowMillis: Long = System.currentTimeMillis(),
     ): IndexAcceptance {
-        require(indexEpoch != 0L) { "Index epoch cannot be zero" }
-        require(previousSequence >= 0 && lastSequence >= previousSequence) { "Invalid index sequence range" }
         val existing = syncDao.folderIndexState(folderId, remoteDeviceId)
-        val epochChanged = existing != null && existing.indexEpoch != indexEpoch
-        if ((existing == null || epochChanged) && !fullIndex) return IndexAcceptance.RequiresFullIndex
-        val expectedPrevious = if (fullIndex || epochChanged) 0 else existing?.maxSequence ?: 0
-        if (previousSequence != expectedPrevious) return IndexAcceptance.RequiresFullIndex
+        val decision = reconcileReceivedIndex(
+            existing?.toSnapshot(), indexEpoch, previousSequence, lastSequence, fullIndex,
+        )
+        if (decision is IndexReceiveDecision.RequiresFullIndex) return IndexAcceptance.RequiresFullIndex
+        val next = (decision as IndexReceiveDecision.Accepted).next
 
         val updated = FolderIndexStateEntity(
             folderId = folderId,
             deviceId = remoteDeviceId,
-            indexEpoch = indexEpoch,
-            maxSequence = lastSequence,
-            metadataReceivedSequence = lastSequence,
-            contentAppliedSequence = if (epochChanged || fullIndex) 0 else existing?.contentAppliedSequence ?: 0,
+            indexEpoch = next.indexEpoch,
+            maxSequence = next.maxSequence,
+            metadataReceivedSequence = next.metadataReceivedSequence,
+            contentAppliedSequence = next.contentAppliedSequence,
             updatedAtMillis = nowMillis,
         )
         syncDao.upsertFolderIndexState(updated)
@@ -59,15 +62,16 @@ class IndexStateRepository(private val syncDao: SyncDao) {
         nowMillis: Long = System.currentTimeMillis(),
     ): FolderIndexSummary {
         val current = requireNotNull(syncDao.folderIndexState(folderId, deviceId)) { "Unknown device index" }
-        require(current.indexEpoch == indexEpoch) { "Acknowledgement belongs to a stale index epoch" }
-        require(sequence in current.contentAppliedSequence..current.metadataReceivedSequence) {
-            "Applied acknowledgement is outside the received metadata range"
-        }
-        val updated = current.copy(contentAppliedSequence = sequence, updatedAtMillis = nowMillis)
+        val next = acknowledgeIndexContent(current.toSnapshot(), indexEpoch, sequence)
+        val updated = current.copy(contentAppliedSequence = next.contentAppliedSequence, updatedAtMillis = nowMillis)
         syncDao.upsertFolderIndexState(updated)
         return updated.toDomain()
     }
 }
+
+private fun FolderIndexStateEntity.toSnapshot() = IndexStateSnapshot(
+    indexEpoch, maxSequence, metadataReceivedSequence, contentAppliedSequence,
+)
 
 private fun FolderIndexStateEntity.toDomain() = FolderIndexSummary(
     folderId,

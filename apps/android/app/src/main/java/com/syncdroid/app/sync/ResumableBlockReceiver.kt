@@ -2,13 +2,13 @@ package com.syncdroid.app.sync
 
 import com.syncdroid.app.data.PartialTransferEntity
 import com.syncdroid.app.data.SyncDao
+import com.syncdroid.shared.sync.ResumableTransferProgress
+import com.syncdroid.shared.sync.isCompatiblePartialTransfer
+import com.syncdroid.shared.sync.resumableTransferId
+import com.syncdroid.shared.sync.validateReceivedBlock
 import java.io.File
 import java.io.FileInputStream
 import java.io.RandomAccessFile
-import java.security.MessageDigest
-import java.nio.charset.StandardCharsets
-import java.util.Base64
-import java.util.BitSet
 
 class ResumableBlockReceiver(
     private val syncDao: SyncDao,
@@ -21,18 +21,15 @@ class ResumableBlockReceiver(
 
     suspend fun missingBlocks(manifest: BlockManifest): List<Int> {
         val state = loadOrCreate(manifest)
-        val received = decodeBits(state.receivedBlocksBase64)
-        val missing = manifest.blocks.map(FileBlock::index).filterNot(received::get)
+        val progress = ResumableTransferProgress(state.receivedBlocksBase64)
+        val missing = progress.missingBlocks(manifest.blocks)
         if (missing.isEmpty()) complete(manifest, File(state.temporaryPath))
         return missing
     }
 
     suspend fun acceptBlock(manifest: BlockManifest, blockIndex: Int, data: ByteArray): Boolean {
-        val block = requireNotNull(manifest.blocks.getOrNull(blockIndex)) { "Unknown block index" }
-        require(data.size == block.sizeBytes) { "Received block has the wrong size" }
-        require(MessageDigest.getInstance("SHA-256").digest(data).toHex().equals(block.sha256, true)) {
-            "Received block hash does not match its manifest"
-        }
+        val block = manifest.blocks.firstOrNull { it.index == blockIndex } ?: error("Unknown block index")
+        validateReceivedBlock(block, blockIndex, data)
         val state = loadOrCreate(manifest)
         RandomAccessFile(state.temporaryPath, "rw").use { file ->
             file.setLength(manifest.sizeBytes)
@@ -40,12 +37,12 @@ class ResumableBlockReceiver(
             file.write(data)
             file.fd.sync()
         }
-        val received = decodeBits(state.receivedBlocksBase64).apply { set(blockIndex) }
+        val progress = ResumableTransferProgress(state.receivedBlocksBase64).record(blockIndex)
         syncDao.upsertPartialTransfer(state.copy(
-            receivedBlocksBase64 = encodeBits(received),
+            receivedBlocksBase64 = progress.receivedBlocksBase64,
             updatedAtMillis = System.currentTimeMillis(),
         ))
-        if (manifest.blocks.any { !received.get(it.index) }) return false
+        if (!progress.isComplete(manifest.blocks)) return false
         complete(manifest, File(state.temporaryPath))
         return true
     }
@@ -53,17 +50,15 @@ class ResumableBlockReceiver(
     private suspend fun loadOrCreate(manifest: BlockManifest): PartialTransferEntity {
         syncDao.partialTransfer(manifest.folderId, manifest.fileId, manifest.contentSha256)?.let { existing ->
             if (
-                existing.totalSizeBytes == manifest.sizeBytes &&
-                existing.blockSizeBytes == manifest.blockSizeBytes &&
+                isCompatiblePartialTransfer(
+                    manifest.sizeBytes, manifest.blockSizeBytes, existing.totalSizeBytes, existing.blockSizeBytes,
+                ) &&
                 File(existing.temporaryPath).exists()
             ) return existing
             syncDao.deletePartialTransfer(manifest.folderId, manifest.fileId, manifest.contentSha256)
             File(existing.temporaryPath).takeIf(File::exists)?.delete()
         }
-        val transferId = MessageDigest.getInstance("SHA-256").digest(
-            "${manifest.folderId}\u0000${manifest.fileId}\u0000${manifest.contentSha256}"
-                .toByteArray(StandardCharsets.UTF_8),
-        ).toHex()
+        val transferId = resumableTransferId(manifest.folderId, manifest.fileId, manifest.contentSha256)
         val temporary = File(temporaryDirectory, "$transferId.part")
         val state = PartialTransferEntity(
             manifest.folderId,
@@ -72,7 +67,7 @@ class ResumableBlockReceiver(
             temporary.absolutePath,
             manifest.sizeBytes,
             manifest.blockSizeBytes,
-            encodeBits(BitSet()),
+            ResumableTransferProgress().receivedBlocksBase64,
             System.currentTimeMillis(),
         )
         syncDao.upsertPartialTransfer(state)
@@ -88,7 +83,4 @@ class ResumableBlockReceiver(
         syncDao.deletePartialTransfer(manifest.folderId, manifest.fileId, manifest.contentSha256)
         temporary.delete()
     }
-
-    private fun encodeBits(bits: BitSet): String = Base64.getEncoder().encodeToString(bits.toByteArray())
-    private fun decodeBits(value: String): BitSet = BitSet.valueOf(Base64.getDecoder().decode(value))
 }

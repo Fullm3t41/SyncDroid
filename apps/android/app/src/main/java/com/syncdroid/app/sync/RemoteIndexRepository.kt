@@ -6,35 +6,12 @@ import com.syncdroid.app.data.FileVersionEntity
 import com.syncdroid.app.data.FolderIndexStateEntity
 import com.syncdroid.app.data.RemoteFileVersionEntity
 import com.syncdroid.app.data.SyncDroidDatabase
+import com.syncdroid.shared.sync.FileSyncState
+import com.syncdroid.shared.sync.decideFileSync as decideSharedFileSync
+import com.syncdroid.shared.sync.validateFolderIndexUpdate
 import java.security.SecureRandom
 import java.nio.charset.StandardCharsets
 import java.util.UUID
-
-data class IndexedFileRecord(
-    val relativePath: String,
-    val fileId: String,
-    val sizeBytes: Long,
-    val modifiedAtMillis: Long,
-    val contentSha256: String,
-    val previousContentSha256: String?,
-    val originDeviceId: String,
-    val deleted: Boolean,
-    val version: VersionVector,
-    val sequence: Long,
-    val blockSizeBytes: Int = 0,
-    val blocks: List<FileBlock> = emptyList(),
-)
-
-data class FolderIndexUpdate(
-    val folderId: String,
-    val indexEpoch: Long,
-    val previousSequence: Long,
-    val lastSequence: Long,
-    val fullIndex: Boolean,
-    val files: List<IndexedFileRecord>,
-)
-
-enum class FileSyncAction { Nothing, DownloadRemote, SendLocal, Conflict }
 
 data class FileSyncPlan(
     val action: FileSyncAction,
@@ -46,30 +23,18 @@ data class FileSyncPlan(
 )
 
 fun decideFileSync(local: FileVersionEntity?, remote: RemoteFileVersionEntity): Pair<FileSyncAction, String> {
-    if (local == null) return if (remote.deleted) {
-        FileSyncAction.Nothing to "Both sides have no live file"
-    } else {
-        FileSyncAction.DownloadRemote to "File is new on the remote device"
-    }
-    if (local.deleted == remote.deleted && local.contentSha256.equals(remote.contentSha256, true)) {
-        return FileSyncAction.Nothing to "File content is already identical"
-    }
-    val localVersion = VersionVector.fromJson(local.versionVectorJson)
-    val remoteVersion = VersionVector.fromJson(remote.versionVectorJson)
-    return when (localVersion.relationTo(remoteVersion)) {
-        CausalRelation.Before -> FileSyncAction.DownloadRemote to "Remote file causally follows local"
-        CausalRelation.After -> FileSyncAction.SendLocal to "Local file causally follows remote"
-        CausalRelation.Equal -> FileSyncAction.Conflict to "Equal vectors describe different content"
-        CausalRelation.Concurrent -> when {
-            remote.previousContentSha256 != null &&
-                remote.previousContentSha256.equals(local.contentSha256, true) ->
-                FileSyncAction.DownloadRemote to "Remote content proves it descends from local"
-            local.previousContentSha256 != null &&
-                local.previousContentSha256.equals(remote.contentSha256, true) ->
-                FileSyncAction.SendLocal to "Local content proves it descends from remote"
-            else -> FileSyncAction.Conflict to "Both devices changed this file independently"
-        }
-    }
+    val decision = decideSharedFileSync(
+        local = local?.let {
+            FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, VersionVector.fromJson(it.versionVectorJson))
+        },
+        remote = FileSyncState(
+            remote.deleted,
+            remote.contentSha256,
+            remote.previousContentSha256,
+            VersionVector.fromJson(remote.versionVectorJson),
+        ),
+    )
+    return decision.action to decision.reason
 }
 
 class RemoteIndexRepository(
@@ -81,7 +46,7 @@ class RemoteIndexRepository(
     private val blockManifests = BlockManifestRepository(syncDao)
 
     suspend fun receive(remoteDeviceId: String, update: FolderIndexUpdate): Pair<IndexAcceptance, List<FileSyncPlan>> {
-        validate(update)
+        validateFolderIndexUpdate(update)
         lateinit var acceptance: IndexAcceptance
         database.withTransaction {
             acceptance = indexStates.receiveMetadata(
@@ -250,30 +215,6 @@ class RemoteIndexRepository(
         )
     }
 
-    private fun validate(update: FolderIndexUpdate) {
-        require(update.indexEpoch != 0L && update.previousSequence >= 0 && update.lastSequence >= update.previousSequence)
-        var sequence = update.previousSequence
-        val paths = mutableSetOf<String>()
-        update.files.forEach { file ->
-            require(file.sequence > sequence && file.sequence <= update.lastSequence) { "Index sequences are not increasing" }
-            sequence = file.sequence
-            require(paths.add(normalizedRelativePath(file.relativePath))) { "Index contains a duplicate path" }
-            require(file.fileId.isNotBlank())
-            require(file.originDeviceId.isNotBlank())
-            require(file.sizeBytes >= 0 && file.modifiedAtMillis >= 0)
-            require(file.deleted || file.contentSha256.matches(Regex("[a-fA-F0-9]{64}"))) { "Invalid content hash" }
-            require(file.previousContentSha256 == null || file.previousContentSha256.matches(Regex("[a-fA-F0-9]{64}")))
-            var expectedOffset = 0L
-            file.blocks.forEachIndexed { index, block ->
-                require(block.index == index && block.offsetBytes == expectedOffset && block.sizeBytes >= 0)
-                require(block.sha256.matches(Regex("[a-fA-F0-9]{64}")))
-                expectedOffset += block.sizeBytes
-            }
-            if (file.blocks.isNotEmpty()) require(file.blockSizeBytes > 0)
-            if (!file.deleted && file.blocks.isNotEmpty()) require(expectedOffset == file.sizeBytes)
-        }
-        if (update.files.isNotEmpty()) require(sequence == update.lastSequence) { "Index last sequence does not match its records" }
-    }
 }
 
 private fun IndexedFileRecord.toBlockManifest(folderId: String): BlockManifest? =

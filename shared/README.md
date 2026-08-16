@@ -1,9 +1,15 @@
 # Shared implementation
 
-The shared area is split by responsibility so security-sensitive protocol behavior and synchronization decisions do not diverge between applications.
+The shared build contains platform-neutral behavior consumed directly by SyncDroid and SyncTosh.
 
-- `mesh-protocol`: canonical encoding, signed payloads, pairing/session messages, and wire compatibility.
-- `sync-core`: indexes, version vectors, conflict decisions, history, hashing, and resumable transfer state.
-- `desktop-ui`: reusable Compose desktop screens and components for SyncTosh and SyncDows.
+- `mesh-protocol`: version vectors, canonical signed payloads, mesh/pairing/peer/session/index/transfer models, bounded wire codecs, identity helpers, identifiers, and legacy compatibility.
+- `sync-core`: file conflict decisions, content-block manifests, hashing, safe paths, index reconciliation, acknowledgements, and resumable-transfer progress.
+- `desktop-ui`: reserved for reusable Compose desktop screens and components for SyncTosh and SyncDows.
 
-These directories are architectural boundaries at present. Code should move into them only with byte-for-byte protocol fixtures and Android/macOS interoperability tests in place.
+Run the independent shared test suite with:
+
+```sh
+./gradlew test
+```
+
+Golden values in `../protocol/fixtures` lock payload and wire bytes, identifiers, hashes, and sync decisions. Android and macOS adapter tests consume the same fixtures.
