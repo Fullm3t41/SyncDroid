@@ -99,18 +99,16 @@ fun main() = application {
             Separator()
             Menu("Sync interval · ${discoveryIntervalLabel(discoveryInterval)}") {
                 SUPPORTED_DISCOVERY_INTERVALS.forEach { minutes ->
-                    RadioButtonItem(
-                        text = discoveryIntervalLabel(minutes),
-                        selected = discoveryInterval == minutes,
+                    Item(
+                        text = selectionLabel(discoveryInterval == minutes, discoveryIntervalLabel(minutes)),
                         onClick = { updateDiscoveryInterval(minutes) },
                     )
                 }
             }
             Menu("Discovery duration · ${discoveryWindowLabel(discoveryWindow)}") {
                 SUPPORTED_DISCOVERY_WINDOWS.forEach { seconds ->
-                    RadioButtonItem(
-                        text = discoveryWindowLabel(seconds),
-                        selected = discoveryWindow == seconds,
+                    Item(
+                        text = selectionLabel(discoveryWindow == seconds, discoveryWindowLabel(seconds)),
                         onClick = { updateDiscoveryWindow(seconds) },
                     )
                 }
@@ -143,3 +141,6 @@ fun main() = application {
         }
     }
 }
+
+private fun selectionLabel(selected: Boolean, label: String): String =
+    if (selected) "✓ $label" else "   $label"
