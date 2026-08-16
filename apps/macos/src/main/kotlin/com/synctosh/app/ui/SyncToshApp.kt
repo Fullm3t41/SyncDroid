@@ -26,7 +26,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,6 +49,10 @@ private enum class SecondaryScreen { PowerDiscovery, FileHistory }
 fun SyncToshApp(
     preferences: AppPreferences,
     runtime: MeshRuntime,
+    discoveryInterval: Int,
+    discoveryWindow: Long,
+    onDiscoveryIntervalChanged: (Int) -> Unit,
+    onDiscoveryWindowChanged: (Long) -> Unit,
     onCloseToNotificationBar: () -> Unit,
 ) {
     val meshState by runtime.state.collectAsState()
@@ -60,8 +63,6 @@ fun SyncToshApp(
     var featureNotice by remember { mutableStateOf<String?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameDraft by remember { mutableStateOf(deviceName) }
-    var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
-    var discoveryWindow by remember { mutableStateOf(preferences.discoveryWindowSeconds) }
     var showCreateMesh by remember { mutableStateOf(false) }
     var showJoinMesh by remember { mutableStateOf(false) }
     var showPairingOffer by remember { mutableStateOf(false) }
@@ -127,16 +128,8 @@ fun SyncToshApp(
                         SecondaryScreen.PowerDiscovery -> PowerDiscoveryScreen(
                             intervalMinutes = discoveryInterval,
                             windowSeconds = discoveryWindow,
-                            onIntervalChanged = {
-                                discoveryInterval = it
-                                preferences.discoveryIntervalMinutes = it
-                                runtime.discoveryScheduleChanged()
-                            },
-                            onWindowChanged = {
-                                discoveryWindow = it
-                                preferences.discoveryWindowSeconds = it
-                                runtime.discoveryScheduleChanged()
-                            },
+                            onIntervalChanged = onDiscoveryIntervalChanged,
+                            onWindowChanged = onDiscoveryWindowChanged,
                             onBack = { secondaryScreen = null },
                         )
                         SecondaryScreen.FileHistory -> FileHistoryScreen(

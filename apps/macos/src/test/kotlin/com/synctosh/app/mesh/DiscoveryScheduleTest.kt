@@ -65,4 +65,14 @@ class DiscoveryScheduleTest {
             upcoming.map { it.start.hour to it.start.minute },
         )
     }
+
+    @Test
+    fun menuAndSettingsUseTheSameSupportedDiscoveryChoices() {
+        assertEquals(listOf(5, 15, 30, 60, 360, 1_440, 2_880, 10_080), SUPPORTED_DISCOVERY_INTERVALS)
+        assertEquals(listOf(30L, 60L, 120L, 300L), SUPPORTED_DISCOVERY_WINDOWS)
+        assertEquals("48 hours", discoveryIntervalLabel(48 * 60))
+        assertEquals("48 hr", discoveryIntervalLabel(48 * 60, compact = true))
+        assertEquals("1 week", discoveryIntervalLabel(7 * 24 * 60))
+        assertEquals("5 minutes", discoveryWindowLabel(300))
+    }
 }

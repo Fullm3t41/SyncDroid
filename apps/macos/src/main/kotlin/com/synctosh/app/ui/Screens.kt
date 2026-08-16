@@ -71,6 +71,10 @@ import com.synctosh.app.mesh.FileHistoryAction
 import com.synctosh.app.mesh.FileHistoryEvent
 import com.synctosh.app.mesh.MeshFolder
 import com.synctosh.app.mesh.MeshChatMessage
+import com.synctosh.app.mesh.SUPPORTED_DISCOVERY_INTERVALS
+import com.synctosh.app.mesh.SUPPORTED_DISCOVERY_WINDOWS
+import com.synctosh.app.mesh.discoveryIntervalLabel
+import com.synctosh.app.mesh.discoveryWindowLabel
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -864,11 +868,11 @@ fun PowerDiscoveryScreen(
                 SectionLabel("DISCOVERY INTERVAL")
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SUPPORTED_INTERVALS.chunked(4).forEach { row ->
+                    SUPPORTED_DISCOVERY_INTERVALS.chunked(4).forEach { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { minutes ->
                                 SelectablePill(
-                                    label = intervalLabel(minutes),
+                                    label = discoveryIntervalLabel(minutes, compact = true),
                                     selected = minutes == intervalMinutes,
                                     onClick = { onIntervalChanged(minutes) },
                                     modifier = Modifier.weight(1f),
@@ -882,7 +886,7 @@ fun PowerDiscoveryScreen(
                 SectionLabel("DISCOVERY WINDOW")
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SUPPORTED_WINDOWS.forEach { seconds ->
+                    SUPPORTED_DISCOVERY_WINDOWS.forEach { seconds ->
                         SelectablePill(
                             label = if (seconds < 60) "${seconds}s" else "${seconds / 60} min",
                             selected = seconds == windowSeconds,
@@ -918,7 +922,7 @@ fun PowerDiscoveryScreen(
                                 Text(windowLabel(window.start, window.end, includeDate), style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.weight(1f))
                                 Text(
-                                    "active ${windowDurationLabel(windowSeconds)}",
+                                    "active ${discoveryWindowLabel(windowSeconds)}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -953,20 +957,6 @@ private fun windowLabel(start: LocalDateTime, end: LocalDateTime, includeDate: B
     return "${start.format(startFormatter)}–${end.format(endFormatter)}"
 }
 
-private fun intervalLabel(minutes: Int): String = when {
-    minutes == 7 * 24 * 60 -> "1 wk"
-    minutes % 60 == 0 -> "${minutes / 60} hr"
-    else -> "$minutes min"
-}
-
-private fun windowDurationLabel(seconds: Long): String = when {
-    seconds < 60 -> "$seconds seconds"
-    seconds == 60L -> "1 minute"
-    else -> "${seconds / 60} minutes"
-}
-
-private val SUPPORTED_INTERVALS = listOf(5, 15, 30, 60, 6 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
-private val SUPPORTED_WINDOWS = listOf(30L, 60L, 120L, 300L)
 private val TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm")
 private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("EEE d MMM, HH:mm")
 private val CHAT_TIME_FORMAT = DateTimeFormatter.ofPattern("d MMM, HH:mm")
