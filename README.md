@@ -1,32 +1,42 @@
-# SyncDroid
+# SyncDroid mesh suite
 
-SyncDroid is a local Wi-Fi-only file-sync concept with an Android-first client. Devices form an equal-peer mesh: there is no permanent host, cloud account, or internet dependency. The protocol boundary is platform-neutral so future Windows, Linux, and macOS clients can join as equal peers.
+This repository contains the equal-peer, local-Wi-Fi SyncDroid mesh applications. There is no permanent host: SyncDroid, SyncTosh, and the planned SyncDows application use the same mesh membership, synchronization, conflict, history, and chat semantics.
 
-The Android client targets Android 10 and newer and includes authenticated local discovery, replicated mesh metadata, and peer file transfer.
+## Applications
 
-## Included in the prototype
+| Directory | Product | Platform | Status |
+| --- | --- | --- | --- |
+| `apps/android` | SyncDroid | Android 10+ | Active |
+| `apps/macos` | SyncTosh | Apple Silicon macOS 13+ | Preview |
+| `apps/windows` | SyncDows | Windows | Planned |
 
-- Calm, neutral light and dark themes
-- Five-tab Sync, Folders, Devices, Chat, and Settings navigation
-- Hub-and-spoke local mesh with the current device in the centre and no peer-to-peer line crossings
-- Expandable save-folder cards and a visible conflict-review state
-- Built-in file manager with folder creation when Android grants All files access
-- Automatic fallback to Android's folder picker when broad access is unavailable or declined, including Android 10
-- Per-folder include and exclude filters with glob patterns such as `*.sav`
-- Wi-Fi-specific power rules, configurable discovery intervals, coordinated rendezvous times, and five-minute discovery windows
-- Persistent multi-network Wi-Fi allowlist that switches sync on for any enabled SSID and pauses it elsewhere
-- Generated mesh-inspired launcher icon with adaptive, legacy-density, and Play Store assets
-- Unit-tested discovery-window schedule calculations
-- Standard UTF-8, versioned mesh metadata with legacy Android decoding
-- Draft cross-platform Protobuf contract for future Windows, Linux, and macOS clients
-- Signed, host-free mesh group chat replicated during authenticated local rendezvous sessions
+Each existing application keeps its own Gradle wrapper so it can be built and tested independently while the common implementation is extracted incrementally.
 
-## Build
+## Shared boundaries
+
+- `shared/mesh-protocol` owns canonical payloads, signatures, wire codecs, and compatibility rules.
+- `shared/sync-core` owns version vectors, reconciliation, conflict decisions, hashing, and resumable transfers.
+- `shared/desktop-ui` will hold Compose UI shared by SyncTosh and SyncDows.
+- `protocol` contains stable schemas and cross-platform compatibility fixtures.
+
+Platform projects must not independently change wire formats or synchronization decisions once those components move into `shared`.
+
+## Build SyncDroid
 
 ```sh
+cd apps/android
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The APK is written to `apps/android/app/build/outputs/apk/debug/app-debug.apk`.
 
-See `docs/design-plan.md` for the product plan and `docs/cross-platform-protocol.md` for the interoperability contract.
+## Build SyncTosh
+
+```sh
+cd apps/macos
+./gradlew test packageDmg
+```
+
+The DMG is written beneath `apps/macos/build/compose/binaries/main/dmg`.
+
+See `docs/design-plan.md` for the Android product plan, `apps/macos/docs/design-plan.md` for the macOS plan, and `docs/cross-platform-protocol.md` for the interoperability contract.

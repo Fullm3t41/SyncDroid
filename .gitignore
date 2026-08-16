@@ -1,6 +1,7 @@
 *.iml
 .gradle/
 .kotlin/
+.toolchains/
 .idea/
 .DS_Store
 local.properties
@@ -8,8 +9,11 @@ build/
 captures/
 .externalNativeBuild/
 .cxx/
-app/build/
 *.apk
 *.aab
+*.dmg
+*.pkg
+*.exe
+*.msi
 *.jks
 *.keystore
