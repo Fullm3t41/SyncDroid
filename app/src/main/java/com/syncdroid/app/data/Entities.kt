@@ -431,11 +431,35 @@ data class ConflictEntity(
     val renamedRelativePath: String? = null,
 )
 
-@Entity(tableName = "activity_events", primaryKeys = ["eventId"], indices = [Index("createdAtMillis")])
+@Entity(
+    tableName = "activity_events",
+    primaryKeys = ["eventId"],
+    indices = [Index("createdAtMillis"), Index("folderId"), Index("recoverableUntilMillis")],
+)
 data class ActivityEventEntity(
     val eventId: String,
     val category: String,
     val title: String,
     val detail: String,
     val createdAtMillis: Long,
+    @ColumnInfo(defaultValue = "'INFO'")
+    val action: String = "INFO",
+    @ColumnInfo(defaultValue = "NULL")
+    val folderId: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val relativePath: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val sourceDeviceId: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val sizeBytes: Long? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val modifiedAtMillis: Long? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val contentSha256: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val recoveryPath: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val recoverableUntilMillis: Long? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val recoveredAtMillis: Long? = null,
 )

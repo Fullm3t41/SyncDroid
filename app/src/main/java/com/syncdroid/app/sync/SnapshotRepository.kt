@@ -22,6 +22,7 @@ class SnapshotRepository(
     private val epochSource: () -> Long = ::randomIndexEpoch,
 ) {
     private val syncDao: SyncDao = database.syncDao()
+    private val activityDao = database.activityDao()
     private val exceptionRepository = FolderExceptionRepository(database, signer)
     suspend fun scanDirectFolder(
         folderId: String,
@@ -76,6 +77,7 @@ class SnapshotRepository(
         var nextSequence = localIndex.maxSequence
         var changed = false
         val updated = linkedMapOf<String, FileVersionEntity>()
+        val historyEvents = mutableListOf<com.syncdroid.app.data.ActivityEventEntity>()
 
         for (file in scannedFiles) {
             if (file.relativePath in awaitingRemoteResolution) continue
@@ -102,7 +104,24 @@ class SnapshotRepository(
                         .toJson(),
                     originDeviceId = originDeviceId,
                     localSequence = nextSequence,
-                )
+                ).also { current ->
+                    val action = if (previous == null || previous.deleted) {
+                        FileHistoryAction.ADDED
+                    } else {
+                        FileHistoryAction.UPDATED
+                    }
+                    historyEvents += fileHistoryEvent(
+                        action = action,
+                        folderId = folderId,
+                        relativePath = current.relativePath,
+                        sourceDeviceId = originDeviceId,
+                        sizeBytes = current.sizeBytes,
+                        modifiedAtMillis = current.modifiedAtMillis,
+                        contentSha256 = current.contentSha256,
+                        createdAtMillis = nowMillis,
+                        title = if (action == FileHistoryAction.ADDED) "Added file" else "Updated file",
+                    )
+                }
             }
             updated[file.relativePath] = entry
         }
@@ -135,6 +154,19 @@ class SnapshotRepository(
                         originDeviceId = originDeviceId,
                         localSequence = nextSequence,
                     )
+                    if (activityDao.activeDeletion(folderId, path, previous.contentSha256) == null) {
+                        historyEvents += fileHistoryEvent(
+                            action = FileHistoryAction.DELETED,
+                            folderId = folderId,
+                            relativePath = path,
+                            sourceDeviceId = originDeviceId,
+                            sizeBytes = previous.sizeBytes,
+                            modifiedAtMillis = previous.modifiedAtMillis,
+                            contentSha256 = previous.contentSha256,
+                            createdAtMillis = nowMillis,
+                            title = "Deleted file",
+                        )
+                    }
                 }
             }
         }
@@ -177,6 +209,7 @@ class SnapshotRepository(
             updated.values.toList(),
             updatedIndex,
         )
+        if (historyEvents.isNotEmpty()) activityDao.insertAll(historyEvents)
         return manifest
     }
 

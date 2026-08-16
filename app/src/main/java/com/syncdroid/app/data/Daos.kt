@@ -275,6 +275,43 @@ interface ActivityDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(event: ActivityEventEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(events: List<ActivityEventEntity>)
+
     @Query("SELECT * FROM activity_events ORDER BY createdAtMillis DESC LIMIT :limit")
-    fun observeRecent(limit: Int = 50): Flow<List<ActivityEventEntity>>
+    fun observeRecent(limit: Int = 500): Flow<List<ActivityEventEntity>>
+
+    @Query("SELECT * FROM activity_events WHERE eventId = :eventId LIMIT 1")
+    suspend fun event(eventId: String): ActivityEventEntity?
+
+    @Query(
+        """
+        SELECT * FROM activity_events
+        WHERE action = 'DELETED' AND folderId = :folderId AND relativePath = :relativePath
+          AND contentSha256 = :contentSha256 AND recoveredAtMillis IS NULL
+        ORDER BY createdAtMillis DESC LIMIT 1
+        """,
+    )
+    suspend fun activeDeletion(folderId: String, relativePath: String, contentSha256: String): ActivityEventEntity?
+
+    @Query(
+        """
+        SELECT * FROM activity_events
+        WHERE recoveryPath IS NOT NULL AND recoveredAtMillis IS NULL
+          AND recoverableUntilMillis IS NOT NULL AND recoverableUntilMillis <= :nowMillis
+        """,
+    )
+    suspend fun expiredRecoveries(nowMillis: Long): List<ActivityEventEntity>
+
+    @Query("UPDATE activity_events SET recoveryPath = NULL WHERE eventId = :eventId")
+    suspend fun clearRecoveryPath(eventId: String)
+
+    @Query(
+        """
+        UPDATE activity_events
+        SET recoveredAtMillis = :recoveredAtMillis, recoveryPath = NULL
+        WHERE eventId = :eventId
+        """,
+    )
+    suspend fun markRecovered(eventId: String, recoveredAtMillis: Long)
 }

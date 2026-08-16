@@ -51,18 +51,15 @@ fun decideFileSync(local: FileVersionEntity?, remote: RemoteFileVersionEntity): 
     } else {
         FileSyncAction.DownloadRemote to "File is new on the remote device"
     }
+    if (local.deleted == remote.deleted && local.contentSha256.equals(remote.contentSha256, true)) {
+        return FileSyncAction.Nothing to "File content is already identical"
+    }
     val localVersion = VersionVector.fromJson(local.versionVectorJson)
     val remoteVersion = VersionVector.fromJson(remote.versionVectorJson)
     return when (localVersion.relationTo(remoteVersion)) {
         CausalRelation.Before -> FileSyncAction.DownloadRemote to "Remote file causally follows local"
         CausalRelation.After -> FileSyncAction.SendLocal to "Local file causally follows remote"
-        CausalRelation.Equal -> if (
-            local.deleted == remote.deleted && local.contentSha256.equals(remote.contentSha256, true)
-        ) {
-            FileSyncAction.Nothing to "File versions and content are identical"
-        } else {
-            FileSyncAction.Conflict to "Equal vectors describe different content"
-        }
+        CausalRelation.Equal -> FileSyncAction.Conflict to "Equal vectors describe different content"
         CausalRelation.Concurrent -> when {
             remote.previousContentSha256 != null &&
                 remote.previousContentSha256.equals(local.contentSha256, true) ->
@@ -81,6 +78,7 @@ class RemoteIndexRepository(
 ) {
     private val syncDao = database.syncDao()
     private val indexStates = IndexStateRepository(syncDao)
+    private val blockManifests = BlockManifestRepository(syncDao)
 
     suspend fun receive(remoteDeviceId: String, update: FolderIndexUpdate): Pair<IndexAcceptance, List<FileSyncPlan>> {
         validate(update)
@@ -101,6 +99,9 @@ class RemoteIndexRepository(
             }
         }
         if (acceptance is IndexAcceptance.RequiresFullIndex) return acceptance to emptyList()
+        update.files.forEach { record ->
+            record.toBlockManifest(update.folderId)?.let { blockManifests.store(it) }
+        }
 
         val remoteFiles = update.files.map { it.toEntity(update.folderId, remoteDeviceId) }
         val localByPath = syncDao.fileVersions(update.folderId).associateBy(FileVersionEntity::relativePath)
@@ -124,17 +125,7 @@ class RemoteIndexRepository(
             }
             if (action == FileSyncAction.Conflict) recordConflict(update.folderId, local, remote)
             val record = recordsByPath[remote.relativePath]
-            val manifest = record?.takeIf { !it.deleted && it.blocks.isNotEmpty() }?.let {
-                BlockManifest(
-                    update.folderId,
-                    it.fileId,
-                    it.relativePath,
-                    it.sizeBytes,
-                    it.contentSha256,
-                    it.blockSizeBytes,
-                    it.blocks,
-                )
-            }
+            val manifest = record?.toBlockManifest(update.folderId)
             FileSyncPlan(action, remote.relativePath, local, remote, reason, manifest)
         }
         return acceptance to plans
@@ -172,7 +163,14 @@ class RemoteIndexRepository(
                     decideFileSync(local, remote)
                 }
                 if (action == FileSyncAction.Conflict) recordConflict(folderId, local, remote)
-                add(FileSyncPlan(action, remote.relativePath, local, remote, reason))
+                val manifest = if (!remote.deleted) blockManifests.load(
+                    remote.folderId,
+                    remote.fileId,
+                    remote.relativePath,
+                    remote.sizeBytes,
+                    remote.contentSha256,
+                ) else null
+                add(FileSyncPlan(action, remote.relativePath, local, remote, reason, manifest))
             }
         }
     }
@@ -277,6 +275,11 @@ class RemoteIndexRepository(
         if (update.files.isNotEmpty()) require(sequence == update.lastSequence) { "Index last sequence does not match its records" }
     }
 }
+
+private fun IndexedFileRecord.toBlockManifest(folderId: String): BlockManifest? =
+    takeIf { !deleted && blocks.isNotEmpty() }?.let {
+        BlockManifest(folderId, fileId, relativePath, sizeBytes, contentSha256, blockSizeBytes, blocks)
+    }
 
 private fun IndexedFileRecord.toEntity(folderId: String, deviceId: String) = RemoteFileVersionEntity(
     folderId,

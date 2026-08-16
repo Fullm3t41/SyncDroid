@@ -62,6 +62,7 @@ fun ConfiguredFolderContentsScreen(
     deviceNames: Map<String, String>,
     loadVersions: suspend () -> List<FileVersionEntity>,
     onExclude: suspend (List<String>) -> Unit,
+    onDelete: suspend (List<String>) -> Unit,
     onFilesChanged: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -109,7 +110,7 @@ fun ConfiguredFolderContentsScreen(
             removing = true
             runCatching {
                 if (exclude) onExclude(paths)
-                withContext(Dispatchers.IO) { source.delete(paths) }
+                onDelete(paths)
             }.onSuccess {
                 selectedPaths = emptySet()
                 showDeleteDialog = false

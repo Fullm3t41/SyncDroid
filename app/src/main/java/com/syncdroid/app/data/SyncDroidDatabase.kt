@@ -30,7 +30,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SyncExceptionEventEntity::class,
         FolderKeyEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class SyncDroidDatabase : RoomDatabase() {
@@ -47,7 +47,14 @@ abstract class SyncDroidDatabase : RoomDatabase() {
                 context.applicationContext,
                 SyncDroidDatabase::class.java,
                 "syncdroid.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+            ).addMigrations(
+                MIGRATION_1_2,
+                MIGRATION_2_3,
+                MIGRATION_3_4,
+                MIGRATION_4_5,
+                MIGRATION_5_6,
+                MIGRATION_6_7,
+            )
                 .build()
                 .also { instance = it }
         }
@@ -208,6 +215,25 @@ abstract class SyncDroidDatabase : RoomDatabase() {
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE conflicts ADD COLUMN renamedRelativePath TEXT DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN action TEXT NOT NULL DEFAULT 'INFO'")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN folderId TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN relativePath TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN sourceDeviceId TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN sizeBytes INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN modifiedAtMillis INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN contentSha256 TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN recoveryPath TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN recoverableUntilMillis INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE activity_events ADD COLUMN recoveredAtMillis INTEGER DEFAULT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_activity_events_folderId ON activity_events(folderId)")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_activity_events_recoverableUntilMillis ON activity_events(recoverableUntilMillis)",
+                )
             }
         }
     }

@@ -7,6 +7,7 @@ import android.os.IBinder
 import android.text.format.DateFormat
 import androidx.core.app.ServiceCompat
 import com.syncdroid.app.data.SyncDroidDatabase
+import com.syncdroid.app.sync.FileHistoryRepository
 import com.syncdroid.app.mesh.AndroidDeviceIdentity
 import com.syncdroid.app.mesh.LocalDeviceNameStore
 import com.syncdroid.app.mesh.LocalMeshProfile
@@ -59,6 +60,7 @@ class SyncForegroundService : Service() {
         identity = AndroidDeviceIdentity()
         notification = SyncServiceNotification(this)
         eventNotifications = SyncNotificationCenter(this)
+        serviceScope.launch { FileHistoryRepository(this@SyncForegroundService, database, identity.deviceId).cleanupExpired() }
 
         ServiceCompat.startForeground(
             this,

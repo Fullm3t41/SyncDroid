@@ -221,7 +221,9 @@ class ResumableBlockPeerClient(
     private val onBytesTransferred: (Long) -> Unit = {},
 ) {
     suspend fun fetchMissing(connection: AuthenticatedPeerConnection, manifest: BlockManifest): Boolean {
-        for (index in receiver.missingBlocks(manifest)) {
+        val missing = receiver.missingBlocks(manifest)
+        if (missing.isEmpty()) return true
+        for (index in missing) {
             connection.send(FileTransferWireCodec.encode(FileTransferMessage.BlockRequest(
                 manifest.folderId, manifest.fileId, manifest.relativePath, manifest.contentSha256, index,
             )))
@@ -235,6 +237,6 @@ class ResumableBlockPeerClient(
                 else -> error("Unexpected block-transfer response")
             }
         }
-        return receiver.missingBlocks(manifest).isEmpty()
+        return false
     }
 }

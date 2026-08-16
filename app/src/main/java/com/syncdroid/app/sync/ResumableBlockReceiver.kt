@@ -22,7 +22,9 @@ class ResumableBlockReceiver(
     suspend fun missingBlocks(manifest: BlockManifest): List<Int> {
         val state = loadOrCreate(manifest)
         val received = decodeBits(state.receivedBlocksBase64)
-        return manifest.blocks.map(FileBlock::index).filterNot(received::get)
+        val missing = manifest.blocks.map(FileBlock::index).filterNot(received::get)
+        if (missing.isEmpty()) complete(manifest, File(state.temporaryPath))
+        return missing
     }
 
     suspend fun acceptBlock(manifest: BlockManifest, blockIndex: Int, data: ByteArray): Boolean {

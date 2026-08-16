@@ -62,11 +62,13 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
@@ -132,6 +134,7 @@ import com.syncdroid.app.BuildConfig
 import com.syncdroid.app.model.SaveStatus
 import com.syncdroid.app.model.SaveFolder
 import com.syncdroid.app.data.SyncDroidDatabase
+import com.syncdroid.app.data.ActivityEventEntity
 import com.syncdroid.app.data.SyncExceptionEntity
 import com.syncdroid.app.data.ChatMessageEntity
 import com.syncdroid.app.cloud.CloudSyncPolicy
@@ -155,6 +158,8 @@ import com.syncdroid.app.mesh.defaultDeviceName
 import com.syncdroid.app.mesh.decodePublicKey
 import com.syncdroid.app.notifications.SyncNotificationCenter
 import com.syncdroid.app.service.SyncServiceController
+import com.syncdroid.app.sync.FileHistoryAction
+import com.syncdroid.app.sync.FileHistoryRepository
 import com.syncdroid.app.scheduling.alignedDiscoveryWindows
 import com.syncdroid.app.scheduling.DiscoveryPolicy
 import com.syncdroid.app.scheduling.DiscoveryPolicyStore
@@ -217,6 +222,7 @@ fun SyncDroidApp() {
     var showPowerSettings by rememberSaveable { mutableStateOf(false) }
     var showWifiRules by rememberSaveable { mutableStateOf(false) }
     var showCloudSettings by rememberSaveable { mutableStateOf(false) }
+    var showFileHistory by rememberSaveable { mutableStateOf(false) }
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var folderSettingsId by rememberSaveable { mutableStateOf<String?>(null) }
     var openFolderContentsId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -239,6 +245,12 @@ fun SyncDroidApp() {
     val folderStore = remember(context) { FolderConfigurationStore(context) }
     val database = remember(context) { SyncDroidDatabase.get(context) }
     val identity = remember { AndroidDeviceIdentity() }
+    val fileHistory = remember(context, database, identity.deviceId) {
+        FileHistoryRepository(context, database, identity.deviceId)
+    }
+    val historyEvents by remember(database) {
+        database.activityDao().observeRecent()
+    }.collectAsState(initial = emptyList())
     var meshIdentityError by remember { mutableStateOf<String?>(null) }
     val deviceNameStore = remember(context) { LocalDeviceNameStore(context) }
     var localDeviceName by rememberSaveable { mutableStateOf(deviceNameStore.load()) }
@@ -270,6 +282,7 @@ fun SyncDroidApp() {
     }
     val meshChat = remember(database, identity.deviceId) { MeshChatRepository(database, identity) }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(fileHistory) { fileHistory.cleanupExpired() }
     val localFolderViews by remember(database, identity.deviceId, meshProfile.groupId) {
         database.syncDao().observeLocalFolderViews(identity.deviceId, meshProfile.groupId)
     }.collectAsState(initial = emptyList())
@@ -741,7 +754,7 @@ fun SyncDroidApp() {
             Scaffold(
                 containerColor = MaterialTheme.colorScheme.background,
                 bottomBar = {
-                if (!showPowerSettings && !showWifiRules && !showCloudSettings && !showPairing && folderSettingsId == null && openFolderContentsId == null && !showFileManager && pendingSystemUri == null) {
+                if (!showPowerSettings && !showWifiRules && !showCloudSettings && !showFileHistory && !showPairing && folderSettingsId == null && openFolderContentsId == null && !showFileManager && pendingSystemUri == null) {
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                         MainTab.entries.forEach { tab ->
                             NavigationBarItem(
@@ -791,6 +804,26 @@ fun SyncDroidApp() {
                         cloudPolicyRevision++
                     },
                     onBack = { showCloudSettings = false },
+                    modifier = Modifier.padding(scaffoldPadding),
+                )
+            } else if (showFileHistory) {
+                FileHistoryScreen(
+                    events = historyEvents,
+                    folderNames = localFolderViews.associate { it.folderId to it.displayName },
+                    deviceNames = buildMap {
+                        meshDevices.forEach { put(it.deviceId, it.displayName) }
+                        put(identity.deviceId, localDeviceName)
+                    },
+                    onRecover = { event ->
+                        val recoveredPath = fileHistory.recover(event.eventId)
+                        event.folderId?.let { folderId ->
+                            if (database.syncDao().getSyncException(folderId, recoveredPath)?.active == true) {
+                                folderExceptions.undo(folderId, recoveredPath)
+                            }
+                        }
+                        SyncServiceController.requestRefresh(context)
+                    },
+                    onBack = { showFileHistory = false },
                     modifier = Modifier.padding(scaffoldPadding),
                 )
             } else if (showPairing) {
@@ -860,6 +893,17 @@ fun SyncDroidApp() {
                         loadVersions = { database.syncDao().fileVersions(folder.meshFolderId) },
                         onExclude = { paths ->
                             paths.forEach { folderExceptions.record(folder.meshFolderId, it) }
+                        },
+                        onDelete = { paths ->
+                            val binding = requireNotNull(
+                                database.syncDao().getBinding(folder.meshFolderId, identity.deviceId),
+                            ) { "This folder is not configured on this device" }
+                            val versions = database.syncDao().fileVersions(folder.meshFolderId)
+                                .filter { it.relativePath in paths }
+                            require(versions.size == paths.distinct().size) {
+                                "Sync the folder once before deleting these files so recovery can be prepared"
+                            }
+                            fileHistory.deleteWithRecovery(binding, versions)
                         },
                         onFilesChanged = { SyncServiceController.requestRefresh(context) },
                         onBack = { openFolderContentsId = null },
@@ -979,6 +1023,7 @@ fun SyncDroidApp() {
                         },
                         onOpenPowerSettings = { showPowerSettings = true },
                         onOpenCloudSettings = { showCloudSettings = true },
+                        onOpenFileHistory = { showFileHistory = true },
                         cloudScope = cloudPolicy.scope,
                         modifier = Modifier.padding(scaffoldPadding),
                     )
@@ -2263,12 +2308,185 @@ private fun DeviceRow(device: PeerDevice) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileHistoryScreen(
+    events: List<ActivityEventEntity>,
+    folderNames: Map<String, String>,
+    deviceNames: Map<String, String>,
+    onRecover: suspend (ActivityEventEntity) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    var recoveringEventId by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val nowMillis = System.currentTimeMillis()
+
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            TopAppBar(
+                title = { Text("File history") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Text(
+                    "Files deleted by SyncDroid are retained on this device for 30 days. Recovering a file creates a new mesh update so it returns to the other configured devices.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            error?.let { message ->
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Text(
+                            message,
+                            modifier = Modifier.padding(14.dp),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+            if (events.isEmpty()) {
+                item {
+                    EmptyStateCard(
+                        title = "No file activity yet",
+                        detail = "Added, updated, synced, deleted and recovered files will appear here.",
+                    )
+                }
+            } else {
+                items(events, key = ActivityEventEntity::eventId) { event ->
+                    val action = runCatching { FileHistoryAction.valueOf(event.action) }.getOrNull()
+                    val recoverable = action == FileHistoryAction.DELETED &&
+                        event.recoveredAtMillis == null && event.recoveryPath != null &&
+                        (event.recoverableUntilMillis ?: 0L) > nowMillis
+                    val folderName = event.folderId?.let(folderNames::get) ?: "Unknown folder"
+                    val deviceName = event.sourceDeviceId?.let(deviceNames::get)
+                        ?: event.sourceDeviceId?.take(8)
+                        ?: "This device"
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                SettingsIcon(
+                                    when (action) {
+                                        FileHistoryAction.DELETED -> Icons.Rounded.Delete
+                                        FileHistoryAction.RECOVERED -> Icons.Rounded.Restore
+                                        FileHistoryAction.SYNCED -> Icons.Rounded.Sync
+                                        else -> Icons.Rounded.History
+                                    },
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        event.relativePath?.substringAfterLast('/') ?: event.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        historyActionLabel(action) + " · " + formatChatTime(event.createdAtMillis),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "$folderName · $deviceName${event.sizeBytes?.let { " · ${formatConflictFileSize(it)}" }.orEmpty()}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            event.relativePath?.takeIf { it.contains('/') }?.let { path ->
+                                Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (action == FileHistoryAction.DELETED) {
+                                Spacer(Modifier.height(8.dp))
+                                when {
+                                    event.recoveredAtMillis != null -> Text(
+                                        "Recovered ${formatChatTime(event.recoveredAtMillis)}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    recoverable -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "Recoverable until ${formatHistoryDate(requireNotNull(event.recoverableUntilMillis))}",
+                                            modifier = Modifier.weight(1f),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        TextButton(
+                                            enabled = recoveringEventId == null,
+                                            onClick = {
+                                                recoveringEventId = event.eventId
+                                                error = null
+                                                scope.launch {
+                                                    runCatching { onRecover(event) }
+                                                        .onFailure { error = it.message ?: "Could not recover the file" }
+                                                    recoveringEventId = null
+                                                }
+                                            },
+                                        ) {
+                                            Icon(Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(if (recoveringEventId == event.eventId) "Recovering…" else "Recover")
+                                        }
+                                    }
+                                    (event.recoverableUntilMillis ?: 0L) <= nowMillis -> Text(
+                                        "30-day recovery window expired",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    else -> Text(
+                                        "Recovery copy unavailable on this device",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun historyActionLabel(action: FileHistoryAction?): String = when (action) {
+    FileHistoryAction.ADDED -> "Added"
+    FileHistoryAction.UPDATED -> "Updated"
+    FileHistoryAction.SYNCED -> "Synced"
+    FileHistoryAction.DELETED -> "Deleted"
+    FileHistoryAction.RECOVERED -> "Recovered"
+    null -> "Activity"
+}
+
+private fun formatHistoryDate(timestamp: Long): String =
+    SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault()).format(Date(timestamp))
+
 @Composable
 private fun SettingsScreen(
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
     onOpenPowerSettings: () -> Unit,
     onOpenCloudSettings: () -> Unit,
+    onOpenFileHistory: () -> Unit,
     cloudScope: CloudSyncScope,
     modifier: Modifier = Modifier,
 ) {
@@ -2303,6 +2521,13 @@ private fun SettingsScreen(
                         CloudSyncScope.ALL_FOLDERS -> "Enabled for all folders"
                     },
                     onClick = onOpenCloudSettings,
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                SettingsActionRow(
+                    icon = Icons.Rounded.History,
+                    title = "File history",
+                    detail = "Updates, sync activity and 30-day recovery",
+                    onClick = onOpenFileHistory,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
                 SettingsActionRow(

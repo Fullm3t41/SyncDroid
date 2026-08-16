@@ -13,6 +13,7 @@ import com.syncdroid.app.sync.BlockManifestBuilder
 import com.syncdroid.app.sync.BlockManifestRepository
 import com.syncdroid.app.sync.FileSyncAction
 import com.syncdroid.app.sync.FileSyncPlan
+import com.syncdroid.app.sync.FileHistoryRepository
 import com.syncdroid.app.sync.FileTransferMessage
 import com.syncdroid.app.sync.FileTransferWireCodec
 import com.syncdroid.app.sync.DocumentTreeFileApplier
@@ -46,6 +47,7 @@ class MeshSyncSession(
     private val snapshots = SnapshotRepository(database, identity)
     private val remoteIndexes = RemoteIndexRepository(database, identity.deviceId)
     private val blockManifests = BlockManifestRepository(syncDao)
+    private val fileHistory = FileHistoryRepository(appContext, database, identity.deviceId)
 
     suspend fun run(connection: AuthenticatedPeerConnection): MeshSyncResult {
         val remoteDeviceId = connection.peer.deviceId
@@ -242,14 +244,27 @@ class MeshSyncSession(
                         acknowledgementBlocked += folderId
                         continue
                     }
+                    val localBefore = syncDao.fileVersion(folderId, plan.relativePath)
                     if (plan.remote.deleted) {
-                        applier.delete(plan.relativePath)
+                        if (localBefore != null && !localBefore.deleted) {
+                            fileHistory.deleteWithRecovery(
+                                binding = binding,
+                                versions = listOf(localBefore),
+                                sourceDeviceId = plan.remote.originDeviceId.ifBlank { remoteDeviceId },
+                            )
+                        } else {
+                            applier.delete(plan.relativePath)
+                        }
                     } else if (plan.remoteManifest != null && prepared.blockReceiver != null) {
-                        check(ResumableBlockPeerClient(
-                            prepared.blockReceiver,
-                            onBytesTransferred,
-                        ).fetchMissing(connection, plan.remoteManifest))
-                        binding.directDirectoryOrNull()?.let { File(it, plan.relativePath).setLastModified(plan.remote.modifiedAtMillis) }
+                        if (prepared.requestCount > 0) {
+                            check(ResumableBlockPeerClient(
+                                prepared.blockReceiver,
+                                onBytesTransferred,
+                            ).fetchMissing(connection, plan.remoteManifest))
+                        }
+                        binding.directDirectoryOrNull()?.let {
+                            File(it, plan.relativePath).setLastModified(plan.remote.modifiedAtMillis)
+                        }
                     } else {
                         WholeFilePeerClient(transferCache(), onBytesTransferred).fetch(
                             connection,
@@ -263,6 +278,12 @@ class MeshSyncSession(
                         )
                     }
                     remoteIndexes.markRemoteApplied(remoteDeviceId, plan.remote, folderId !in acknowledgementBlocked)
+                    if (!plan.remote.deleted) {
+                        fileHistory.recordRemoteApplied(
+                            remote = plan.remote,
+                            wasNew = localBefore == null || localBefore.deleted,
+                        )
+                    }
                 }
             }
         }
