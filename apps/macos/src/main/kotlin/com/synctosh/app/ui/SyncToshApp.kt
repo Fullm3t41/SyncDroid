@@ -42,6 +42,7 @@ import com.synctosh.app.mesh.MeshFolder
 import com.synctosh.app.platform.AppPreferences
 import com.synctosh.app.platform.MacDeviceName
 import com.synctosh.app.platform.MacFolderPicker
+import com.synctosh.app.platform.UpdateConfig
 import java.nio.file.Path
 import com.syncdroid.shared.update.ReleaseUpdateService
 import com.syncdroid.shared.update.UpdateState
@@ -393,7 +394,7 @@ fun SyncToshApp(
                                 "Google Drive and OneDrive will use the shared encrypted cloud format after local peer sync is interoperable."
                             "Background operation" ->
                                 "Closing the window keeps SyncTosh in the menu bar. While hidden, it uses the interval and discovery window selected in Power & discovery. Reopen it from the menu-bar icon for continuous discovery."
-                            else -> "SyncTosh 0.1.2 · macOS preview"
+                            else -> "SyncTosh ${UpdateConfig.CURRENT_VERSION} · macOS preview"
                         },
                     )
                 },
