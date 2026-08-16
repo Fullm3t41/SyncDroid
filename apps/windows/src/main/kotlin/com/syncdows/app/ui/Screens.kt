@@ -885,7 +885,9 @@ private fun UpdateCard(state: UpdateState, appName: String, onClick: () -> Unit)
         is UpdateState.Idle -> "Version ${state.currentVersion} · Select to check"
     }
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = enabled,
         shape = RoundedCornerShape(20.dp),
         color = if (highlight) activeGreen.copy(alpha = 0.20f) else MaterialTheme.colorScheme.surface,
     ) {
