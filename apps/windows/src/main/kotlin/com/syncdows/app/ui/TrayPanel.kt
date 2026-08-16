@@ -28,10 +28,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -163,6 +163,17 @@ fun TrayPanelWindow(
                         Text("Open SyncDows")
                     }
 
+                    OutlinedButton(
+                        onClick = onQuit,
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.55f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    ) {
+                        Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Exit SyncDows")
+                    }
+
                     DeviceStatusCard(meshState)
 
                     Text(
@@ -205,22 +216,7 @@ fun TrayPanelWindow(
                             durationMenuExpanded = false
                         },
                     )
-
                     Spacer(Modifier.weight(1f))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().clickable(onClick = onQuit).padding(vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Rounded.PowerSettingsNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.error,
-                        )
-                        Spacer(Modifier.width(9.dp))
-                        Text("Quit SyncDows", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
-                    }
                 }
             }
         }

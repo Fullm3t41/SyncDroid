@@ -45,7 +45,7 @@ compose.desktop {
             packageName = "SyncDows"
             // jpackage requires a non-zero first component even while the product is pre-1.0.
             packageVersion = "1.2.1"
-            description = "Local-first peer-to-peer folder synchronization for the SyncDroid mesh"
+            description = "SyncDows Background Sync"
             vendor = "Fullm3t41"
 
             windows {
