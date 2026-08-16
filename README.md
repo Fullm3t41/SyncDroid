@@ -1,6 +1,6 @@
 # SyncDroid mesh suite
 
-This repository contains the equal-peer, local-Wi-Fi SyncDroid mesh applications. There is no permanent host: SyncDroid, SyncTosh, and the planned SyncDows application use the same mesh membership, synchronization, conflict, history, and chat semantics.
+This repository contains the equal-peer, local-Wi-Fi SyncDroid mesh applications. There is no permanent host: SyncDroid, SyncTosh, SyncDows, and the planned SyncDeck application use the same mesh membership, synchronization, conflict, history, and chat semantics.
 
 ## Applications
 
@@ -8,7 +8,8 @@ This repository contains the equal-peer, local-Wi-Fi SyncDroid mesh applications
 | --- | --- | --- | --- |
 | `apps/android` | SyncDroid | Android 10+ | Active |
 | `apps/macos` | SyncTosh | Apple Silicon macOS 13+ | Preview |
-| `apps/windows` | SyncDows | Windows | Planned |
+| `apps/windows` | SyncDows | Windows 10/11 | In development |
+| `apps/linux` | SyncDeck | Linux/SteamOS | Planned |
 
 Each existing application keeps its own Gradle wrapper so it can be built and tested independently while the common implementation is extracted incrementally.
 
@@ -46,6 +47,24 @@ cd apps/macos
 
 The DMG is written beneath `apps/macos/build/compose/binaries/main/dmg`.
 
+## Build and test SyncDows
+
+The source and compatibility suite can be tested on any development OS:
+
+```sh
+cd apps/windows
+./gradlew test
+```
+
+Build the self-contained Windows installers on Windows with JDK 17:
+
+```powershell
+cd apps\windows
+.\gradlew.bat packageExe packageMsi
+```
+
+SyncDows is configured to bundle its Java runtime. Native installer, firewall, tray, network-change, sleep/wake, and physical Android/macOS interoperability testing still require a Windows machine.
+
 See `docs/design-plan.md` for the Android product plan, `apps/macos/docs/design-plan.md` for the macOS plan, and `docs/cross-platform-protocol.md` for the interoperability contract.
 
-For a Windows implementation implementation notes, see [`WINDOWS_BUILD_PLAN.md`](WINDOWS_BUILD_PLAN.md).
+For Windows implementation details and the native acceptance matrix, see [`WINDOWS_BUILD_PLAN.md`](WINDOWS_BUILD_PLAN.md).

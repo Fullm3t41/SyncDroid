@@ -1,0 +1,61 @@
+name: SyncDows Windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/windows/**"
+      - "shared/**"
+      - "protocol/fixtures/**"
+      - ".github/workflows/syncdows-windows.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/windows/**"
+      - "shared/**"
+      - "protocol/fixtures/**"
+      - ".github/workflows/syncdows-windows.yml"
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: apps/windows
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: "17"
+          cache: gradle
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: choco install wixtoolset --no-progress -y
+
+      - name: Test shared compatibility and SyncDows
+        shell: pwsh
+        run: .\gradlew.bat --no-daemon test
+
+      - name: Build EXE and MSI
+        shell: pwsh
+        run: .\gradlew.bat --no-daemon packageExe packageMsi
+
+      - name: Collect versioned installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\release | Out-Null
+          Copy-Item build\compose\binaries\main\exe\*.exe build\release\SyncDows-0.1.0.exe
+          Copy-Item build\compose\binaries\main\msi\*.msi build\release\SyncDows-0.1.0.msi
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: SyncDows-0.1.0-Windows
+          path: apps/windows/build/release/*
+          if-no-files-found: error
