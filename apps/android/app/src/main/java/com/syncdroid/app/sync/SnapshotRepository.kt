@@ -10,6 +10,7 @@ import com.syncdroid.app.data.SyncDao
 import com.syncdroid.app.data.SyncDroidDatabase
 import com.syncdroid.app.mesh.DeviceSigner
 import com.syncdroid.app.storage.SyncFilterRules
+import com.syncdroid.shared.sync.shouldFinalizeOverwriteOnlyException
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
@@ -22,6 +23,7 @@ class SnapshotRepository(
     private val epochSource: () -> Long = ::randomIndexEpoch,
 ) {
     private val syncDao: SyncDao = database.syncDao()
+    private val meshDao = database.meshDao()
     private val activityDao = database.activityDao()
     private val exceptionRepository = FolderExceptionRepository(database, signer)
     suspend fun scanDirectFolder(
@@ -31,9 +33,10 @@ class SnapshotRepository(
         rules: SyncFilterRules,
         nowMillis: Long = System.currentTimeMillis(),
     ): SnapshotManifest? {
-        val activeExceptions = syncDao.activeExceptions(folderId).mapTo(mutableSetOf()) { it.relativePath }
-        val scannedFiles = scanner.scan(rootDirectory, rules, activeExceptions)
-        return persistScan(folderId, originDeviceId, scannedFiles, nowMillis)
+        val localExceptions = exceptionRepository.locallyActivePaths(folderId, originDeviceId)
+        val presentPaths = scanner.listRelativeFilePaths(rootDirectory)
+        val scannedFiles = scanner.scan(rootDirectory, rules, localExceptions)
+        return persistScan(folderId, originDeviceId, scannedFiles, presentPaths, nowMillis)
     }
 
     suspend fun scanDocumentTree(
@@ -44,21 +47,24 @@ class SnapshotRepository(
         rules: SyncFilterRules,
         nowMillis: Long = System.currentTimeMillis(),
     ): SnapshotManifest? {
-        val activeExceptions = syncDao.activeExceptions(folderId).mapTo(mutableSetOf()) { it.relativePath }
-        val scannedFiles = DocumentTreeScanner(context).scan(treeUri, rules, activeExceptions)
-        return persistScan(folderId, originDeviceId, scannedFiles, nowMillis)
+        val localExceptions = exceptionRepository.locallyActivePaths(folderId, originDeviceId)
+        val treeScanner = DocumentTreeScanner(context)
+        val presentPaths = treeScanner.listRelativeFilePaths(treeUri)
+        val scannedFiles = treeScanner.scan(treeUri, rules, localExceptions)
+        return persistScan(folderId, originDeviceId, scannedFiles, presentPaths, nowMillis)
     }
 
     private suspend fun persistScan(
         folderId: String,
         originDeviceId: String,
         scannedFiles: List<FileManifestEntry>,
+        locallyPresentPaths: Set<String>,
         nowMillis: Long,
     ): SnapshotManifest? {
         val folder = requireNotNull(syncDao.getFolder(folderId)) { "Unknown mesh folder" }
         val policy = runCatching { FolderDeletionPolicy.valueOf(folder.deletionPolicy) }
             .getOrDefault(FolderDeletionPolicy.PROPAGATE)
-        val activeExceptions = syncDao.activeExceptions(folderId).mapTo(mutableSetOf()) { it.relativePath }
+        val localActiveExceptions = exceptionRepository.locallyActivePaths(folderId, originDeviceId)
         val awaitingRemoteResolution = syncDao.pathsAwaitingRemoteResolution(folderId).toSet()
         val previousSnapshot = syncDao.latestSnapshot(folderId)
         val previousFiles = existingFileVersions(folderId, previousSnapshot)
@@ -78,6 +84,7 @@ class SnapshotRepository(
         var changed = false
         val updated = linkedMapOf<String, FileVersionEntity>()
         val historyEvents = mutableListOf<com.syncdroid.app.data.ActivityEventEntity>()
+        val resolvedExceptionPaths = mutableListOf<String>()
 
         for (file in scannedFiles) {
             if (file.relativePath in awaitingRemoteResolution) continue
@@ -131,14 +138,48 @@ class SnapshotRepository(
             if (path in scannedPaths) continue
             when {
                 path in awaitingRemoteResolution -> updated[path] = previous
-                path in activeExceptions || policy == FolderDeletionPolicy.OVERWRITE_ONLY -> {
-                    if (path !in activeExceptions) {
-                        exceptionRepository.record(folderId, path, nowMillis)
-                    }
-                    // Keep the last globally known version. The local exception prevents it being pulled back.
-                    updated[path] = previous
-                }
                 previous.deleted -> updated[path] = previous
+                path in localActiveExceptions || policy == FolderDeletionPolicy.OVERWRITE_ONLY -> {
+                    if (path !in locallyPresentPaths) {
+                        exceptionRepository.recordLocalAbsenceIfNeeded(folderId, path, nowMillis)
+                    }
+                    if (
+                        path !in locallyPresentPaths &&
+                        shouldFinalizeException(folder.groupId, folderId, path, originDeviceId)
+                    ) {
+                        changed = true
+                        nextSequence++
+                        updated[path] = previous.copy(
+                            sizeBytes = 0,
+                            modifiedAtMillis = nowMillis,
+                            contentSha256 = "",
+                            previousContentSha256 = previous.contentSha256.takeIf(String::isNotBlank),
+                            deleted = true,
+                            versionVectorJson = VersionVector.fromJson(previous.versionVectorJson)
+                                .increment(originDeviceId)
+                                .toJson(),
+                            originDeviceId = originDeviceId,
+                            localSequence = nextSequence,
+                        )
+                        resolvedExceptionPaths += path
+                        if (activityDao.activeDeletion(folderId, path, previous.contentSha256) == null) {
+                            historyEvents += fileHistoryEvent(
+                                action = FileHistoryAction.DELETED,
+                                folderId = folderId,
+                                relativePath = path,
+                                sourceDeviceId = originDeviceId,
+                                sizeBytes = previous.sizeBytes,
+                                modifiedAtMillis = previous.modifiedAtMillis,
+                                contentSha256 = previous.contentSha256,
+                                createdAtMillis = nowMillis,
+                                title = "Deleted from every device",
+                            )
+                        }
+                    } else {
+                        // Keep the last known live version until every participating device reports it absent.
+                        updated[path] = previous
+                    }
+                }
                 else -> {
                     changed = true
                     nextSequence++
@@ -210,7 +251,34 @@ class SnapshotRepository(
             updatedIndex,
         )
         if (historyEvents.isNotEmpty()) activityDao.insertAll(historyEvents)
+        resolvedExceptionPaths.forEach { path -> exceptionRepository.undo(folderId, path, nowMillis) }
         return manifest
+    }
+
+    private suspend fun shouldFinalizeException(
+        groupId: String,
+        folderId: String,
+        relativePath: String,
+        localDeviceId: String,
+    ): Boolean {
+        val trustedDeviceIds = meshDao.trustedDevices(groupId).mapTo(mutableSetOf()) { it.deviceId }
+        if (localDeviceId !in trustedDeviceIds) trustedDeviceIds += localDeviceId
+        val participantDeviceIds = syncDao.folderIndexStates(folderId)
+            .mapTo(mutableSetOf()) { it.deviceId }
+            .apply { add(localDeviceId) }
+            .intersect(trustedDeviceIds)
+        val absenceReporters = exceptionRepository.absenceReporterDeviceIds(folderId, relativePath)
+        val tombstonedDeviceIds = syncDao.remoteFileVersionsForPath(folderId, relativePath)
+            .filterTo(mutableListOf()) { it.deleted }
+            .mapTo(mutableSetOf()) { it.deviceId }
+        syncDao.fileVersion(folderId, relativePath)
+            ?.takeIf { it.deleted }
+            ?.let { tombstonedDeviceIds += localDeviceId }
+        return shouldFinalizeOverwriteOnlyException(
+            participantDeviceIds,
+            absenceReporters,
+            tombstonedDeviceIds,
+        )
     }
 
     private suspend fun existingFileVersions(

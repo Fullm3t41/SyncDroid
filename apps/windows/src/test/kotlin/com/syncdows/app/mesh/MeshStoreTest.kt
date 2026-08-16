@@ -220,6 +220,8 @@ class MeshStoreTest {
             val excluded = source.recordSyncException(folder.folderId, "save\\main.sav", true, signer, 500)
             assertTrue(excluded.hasValidEventId())
             assertTrue(source.activeSyncException(folder.folderId, "save/main.sav"))
+            assertTrue(source.localActiveSyncException(folder.folderId, "save/main.sav", signer.deviceId))
+            assertEquals(false, source.localActiveSyncException(folder.folderId, "save/main.sav", "other-device"))
             assertEquals(listOf("save/main.sav"), source.activeSyncExceptions().map { it.relativePath })
 
             MeshStore(directory.resolve("destination.db")).use { destination ->
@@ -232,6 +234,7 @@ class MeshStoreTest {
 
             source.recordSyncException(folder.folderId, "save/main.sav", false, signer, 600)
             assertEquals(false, source.activeSyncException(folder.folderId, "save/main.sav"))
+            assertEquals(false, source.localActiveSyncException(folder.folderId, "save/main.sav", signer.deviceId))
             assertTrue(source.activeSyncExceptions().isEmpty())
         }
     }

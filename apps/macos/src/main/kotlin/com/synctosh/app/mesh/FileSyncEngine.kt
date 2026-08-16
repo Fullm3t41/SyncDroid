@@ -93,7 +93,10 @@ class FileSyncEngine(
             val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)
             update.files.map { it.toRemote(update.folderId, remoteDeviceId) }.forEach { remote ->
                 val local = localByPath[remote.relativePath]
-                val (action, reason) = if (store.activeSyncException(remote.folderId, remote.relativePath)) {
+                val (action, reason) = if (
+                    !remote.deleted &&
+                    store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId)
+                ) {
                     FileSyncAction.Nothing to "This device has an active overwrite-only exception"
                 } else {
                     decideFileSync(local, remote)
@@ -108,7 +111,10 @@ class FileSyncEngine(
                 val key = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
                 if (key in receivedKeys) return@forEach
                 val local = store.fileVersion(folder.folderId, remote.relativePath)
-                val (action, reason) = if (store.activeSyncException(remote.folderId, remote.relativePath)) {
+                val (action, reason) = if (
+                    !remote.deleted &&
+                    store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId)
+                ) {
                     FileSyncAction.Nothing to "This device has an active overwrite-only exception"
                 } else {
                     decideFileSync(local, remote)

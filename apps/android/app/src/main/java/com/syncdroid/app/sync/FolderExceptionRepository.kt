@@ -28,6 +28,36 @@ class FolderExceptionRepository(
     suspend fun undo(folderId: String, relativePath: String, nowMillis: Long = System.currentTimeMillis()) =
         createAndApply(folderId, relativePath, active = false, nowMillis)
 
+    suspend fun locallyActivePaths(folderId: String, deviceId: String = signer.deviceId): Set<String> =
+        syncDao.activeExceptions(folderId).mapTo(mutableSetOf(), SyncExceptionEntity::relativePath).let { globallyActive ->
+            syncDao.syncExceptionEventsForDevice(folderId, deviceId)
+                .groupBy(SyncExceptionEventEntity::relativePath)
+                .mapNotNullTo(mutableSetOf()) { (path, events) ->
+                    path.takeIf { path in globallyActive && events.latestForSigner()?.active == true }
+                }
+        }
+
+    suspend fun recordLocalAbsenceIfNeeded(
+        folderId: String,
+        relativePath: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): SyncExceptionEvent? {
+        val normalized = relativePath.replace('\\', '/').trim('/')
+        val latest = syncDao.syncExceptionEventsForPath(folderId, normalized)
+            .filter { it.signerDeviceId == signer.deviceId }
+            .latestForSigner()
+        return if (latest?.active == true) null else record(folderId, normalized, nowMillis)
+    }
+
+    suspend fun absenceReporterDeviceIds(folderId: String, relativePath: String): Set<String> {
+        val normalized = relativePath.replace('\\', '/').trim('/')
+        return syncDao.syncExceptionEventsForPath(folderId, normalized)
+            .groupBy(SyncExceptionEventEntity::signerDeviceId)
+            .mapNotNullTo(mutableSetOf()) { (deviceId, events) ->
+                deviceId.takeIf { events.latestForSigner()?.active == true }
+            }
+    }
+
     suspend fun receive(event: SyncExceptionEvent): Boolean {
         require(event.hasValidEventId()) { "Exception event ID does not match its payload" }
         val folder = requireNotNull(syncDao.getFolder(event.folderId)) { "Unknown mesh folder" }
@@ -90,6 +120,20 @@ class FolderExceptionRepository(
             CausalRelation.Concurrent -> eventId > existing.lastEventId
         }
 }
+
+internal fun List<SyncExceptionEventEntity>.latestForSigner(): SyncExceptionEventEntity? =
+    maxWithOrNull(
+        compareBy<SyncExceptionEventEntity> {
+            VersionVector.fromJson(it.versionVectorJson).counters[it.signerDeviceId] ?: 0L
+        }.thenBy(SyncExceptionEventEntity::eventId),
+    )
+
+internal fun List<SyncExceptionEventEntity>.activePathsForDevice(deviceId: String): Set<String> =
+    filter { it.signerDeviceId == deviceId }
+        .groupBy(SyncExceptionEventEntity::relativePath)
+        .mapNotNullTo(mutableSetOf()) { (path, events) ->
+            path.takeIf { events.latestForSigner()?.active == true }
+        }
 
 private fun SyncExceptionEvent.toEntity() = SyncExceptionEventEntity(
     eventId,

@@ -9,19 +9,43 @@ class DocumentTreeScanner(context: Context) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
 
+    fun listRelativeFilePaths(treeUri: Uri): Set<String> {
+        val root = readableRoot(treeUri)
+        return buildSet { collectRelativeFilePaths(root, parentPath = "", destination = this) }
+    }
+
     fun scan(
         treeUri: Uri,
         rules: SyncFilterRules,
         excludedRelativePaths: Set<String> = emptySet(),
     ): List<FileManifestEntry> {
-        val root = requireNotNull(DocumentFile.fromTreeUri(appContext, treeUri)) {
-            "The selected folder is no longer available"
-        }
-        require(root.exists() && root.isDirectory && root.canRead()) { "The selected folder is not readable" }
+        val root = readableRoot(treeUri)
 
         val files = mutableListOf<FileManifestEntry>()
         scanChildren(root, parentPath = "", rules = rules, excludedRelativePaths = excludedRelativePaths, destination = files)
         return files.sortedBy(FileManifestEntry::relativePath)
+    }
+
+    private fun readableRoot(treeUri: Uri): DocumentFile =
+        requireNotNull(DocumentFile.fromTreeUri(appContext, treeUri)) {
+            "The selected folder is no longer available"
+        }.also { root ->
+            require(root.exists() && root.isDirectory && root.canRead()) { "The selected folder is not readable" }
+        }
+
+    private fun collectRelativeFilePaths(
+        directory: DocumentFile,
+        parentPath: String,
+        destination: MutableSet<String>,
+    ) {
+        directory.listFiles().forEach { child ->
+            val name = child.name?.takeIf(String::isNotBlank) ?: return@forEach
+            val relativePath = if (parentPath.isEmpty()) name else "$parentPath/$name"
+            when {
+                child.isDirectory -> collectRelativeFilePaths(child, relativePath, destination)
+                child.isFile -> destination += relativePath
+            }
+        }
     }
 
     private fun scanChildren(

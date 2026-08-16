@@ -70,7 +70,11 @@ class RemoteIndexRepository(
 
         val remoteFiles = update.files.map { it.toEntity(update.folderId, remoteDeviceId) }
         val localByPath = syncDao.fileVersions(update.folderId).associateBy(FileVersionEntity::relativePath)
-        val exceptions = syncDao.activeExceptions(update.folderId).mapTo(mutableSetOf()) { it.relativePath }
+        val globallyActiveExceptions = syncDao.activeExceptions(update.folderId)
+            .mapTo(mutableSetOf()) { it.relativePath }
+        val exceptions = syncDao.syncExceptionEventsForDevice(update.folderId, currentDeviceId)
+            .activePathsForDevice(currentDeviceId)
+            .intersect(globallyActiveExceptions)
         val recordsByPath = update.files.associateBy { normalizedRelativePath(it.relativePath) }
         val plans = remoteFiles.map { remote ->
             val local = localByPath[remote.relativePath]
@@ -83,7 +87,7 @@ class RemoteIndexRepository(
                 }
             } else if (pendingResolution != null) {
                 FileSyncAction.Nothing to "Waiting for the version selected by the user"
-            } else if (remote.relativePath in exceptions) {
+            } else if (!remote.deleted && remote.relativePath in exceptions) {
                 FileSyncAction.Nothing to "This device has an active overwrite-only exception"
             } else {
                 decideFileSync(local, remote)
@@ -107,7 +111,11 @@ class RemoteIndexRepository(
             val state = syncDao.folderIndexState(folderId, remoteDeviceId) ?: continue
             if (state.contentAppliedSequence >= state.metadataReceivedSequence) continue
             val localByPath = syncDao.fileVersions(folderId).associateBy(FileVersionEntity::relativePath)
-            val exceptions = syncDao.activeExceptions(folderId).mapTo(mutableSetOf()) { it.relativePath }
+            val globallyActiveExceptions = syncDao.activeExceptions(folderId)
+                .mapTo(mutableSetOf()) { it.relativePath }
+            val exceptions = syncDao.syncExceptionEventsForDevice(folderId, currentDeviceId)
+                .activePathsForDevice(currentDeviceId)
+                .intersect(globallyActiveExceptions)
             val pending = syncDao.remoteFileVersions(folderId, remoteDeviceId)
                 .filter { it.remoteSequence > state.contentAppliedSequence }
                 .sortedBy(RemoteFileVersionEntity::remoteSequence)
@@ -122,7 +130,7 @@ class RemoteIndexRepository(
                     }
                 } else if (pendingResolution != null) {
                     FileSyncAction.Nothing to "Waiting for the version selected by the user"
-                } else if (remote.relativePath in exceptions) {
+                } else if (!remote.deleted && remote.relativePath in exceptions) {
                     FileSyncAction.Nothing to "This device has an active overwrite-only exception"
                 } else {
                     decideFileSync(local, remote)

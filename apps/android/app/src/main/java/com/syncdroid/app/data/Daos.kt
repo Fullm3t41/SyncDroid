@@ -155,6 +155,24 @@ interface SyncDao {
     @Query("SELECT * FROM sync_exception_events WHERE groupId = :groupId ORDER BY createdAtMillis, eventId")
     suspend fun syncExceptionEvents(groupId: String): List<SyncExceptionEventEntity>
 
+    @Query(
+        """
+        SELECT * FROM sync_exception_events
+        WHERE folderId = :folderId AND relativePath = :relativePath
+        ORDER BY createdAtMillis, eventId
+        """,
+    )
+    suspend fun syncExceptionEventsForPath(folderId: String, relativePath: String): List<SyncExceptionEventEntity>
+
+    @Query(
+        """
+        SELECT * FROM sync_exception_events
+        WHERE folderId = :folderId AND signerDeviceId = :deviceId
+        ORDER BY createdAtMillis, eventId
+        """,
+    )
+    suspend fun syncExceptionEventsForDevice(folderId: String, deviceId: String): List<SyncExceptionEventEntity>
+
     @Query("UPDATE sync_exceptions SET active = 0, updatedAtMillis = :updatedAtMillis WHERE folderId = :folderId AND relativePath = :relativePath")
     suspend fun undoSyncException(folderId: String, relativePath: String, updatedAtMillis: Long)
 
@@ -175,6 +193,15 @@ interface SyncDao {
 
     @Query("SELECT * FROM remote_file_versions WHERE folderId = :folderId AND deviceId = :deviceId ORDER BY relativePath")
     suspend fun remoteFileVersions(folderId: String, deviceId: String): List<RemoteFileVersionEntity>
+
+    @Query(
+        """
+        SELECT * FROM remote_file_versions
+        WHERE folderId = :folderId AND relativePath = :relativePath
+        ORDER BY deviceId
+        """,
+    )
+    suspend fun remoteFileVersionsForPath(folderId: String, relativePath: String): List<RemoteFileVersionEntity>
 
     @Query("DELETE FROM remote_file_versions WHERE folderId = :folderId AND deviceId = :deviceId")
     suspend fun deleteRemoteFileVersions(folderId: String, deviceId: String)

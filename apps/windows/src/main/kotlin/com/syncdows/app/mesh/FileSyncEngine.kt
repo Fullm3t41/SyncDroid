@@ -121,7 +121,11 @@ class FileSyncEngine(
         val resolution = store.pendingConflictResolution(local, remote)
         val (action, reason) = when {
             resolution != null -> FileSyncAction.DownloadRemote to "Applying the selected conflict resolution"
-            store.activeSyncException(remote.folderId, remote.relativePath) ->
+            !remote.deleted && store.localActiveSyncException(
+                remote.folderId,
+                remote.relativePath,
+                identity.deviceId,
+            ) ->
                 FileSyncAction.Nothing to "This device has an active overwrite-only exception"
             else -> decideFileSync(local, remote)
         }

@@ -32,7 +32,7 @@ SyncDroid connects Android, macOS and Windows devices as an equal-peer mesh. The
 - **Offline catch-up.** Devices exchange indexes and acknowledgements whenever they meet again, even after being offline for days or weeks.
 - **Resumable transfers.** Large files are verified in blocks and interrupted transfers can continue instead of starting again.
 - **Conflict review.** Concurrent edits are compared using version vectors, content hashes and parent hashes. Keep either version or preserve both with a numbered filename.
-- **Safe deletion behavior.** Standard folders replicate deletions with tombstones. Overwrite-only folders can retain deleted files elsewhere and list per-file exceptions that can be undone.
+- **Safe deletion behavior.** Standard folders replicate deletions with tombstones. Overwrite-only folders retain copies elsewhere until every participating device reports the file absent, then resolve the exception into a tombstone automatically. Active exceptions can still be undone individually.
 - **History and recovery.** Review recent file activity and recover eligible deletions for up to 30 days.
 - **Mesh chat.** Trusted devices exchange signed group messages and settle them into chronological order as peers reconnect.
 - **Power-aware discovery.** Register multiple Wi-Fi networks and choose background discovery intervals and windows. Foreground discovery remains continuous, and active synchronization is allowed to finish.

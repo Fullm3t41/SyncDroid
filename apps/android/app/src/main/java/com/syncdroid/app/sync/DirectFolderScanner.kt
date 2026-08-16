@@ -5,6 +5,19 @@ import java.io.File
 import java.io.FileInputStream
 
 class DirectFolderScanner {
+    fun listRelativeFilePaths(rootDirectory: File): Set<String> {
+        val root = rootDirectory.canonicalFile
+        require(root.isDirectory) { "Sync root is not a readable directory" }
+        return root.walkTopDown()
+            .filter(File::isFile)
+            .map { file ->
+                val safeFile = file.canonicalFile
+                require(safeFile.toPath().startsWith(root.toPath())) { "Folder contains a file outside its root" }
+                safeFile.relativeTo(root).invariantSeparatorsPath
+            }
+            .toSet()
+    }
+
     fun scan(
         rootDirectory: File,
         rules: SyncFilterRules,

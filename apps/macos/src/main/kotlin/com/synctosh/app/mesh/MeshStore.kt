@@ -268,6 +268,34 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     }
 
     @Synchronized
+    fun localActiveSyncException(folderId: String, relativePath: String, deviceId: String): Boolean {
+        if (!activeSyncException(folderId, relativePath)) return false
+        return connection.prepareStatement(
+            """SELECT active, version_json, event_id FROM sync_exception_events
+               WHERE folder_id = ? AND relative_path = ? AND signer_device_id = ?""",
+        ).use { statement ->
+            statement.setString(1, folderId)
+            statement.setString(2, normalizeRelativePath(relativePath))
+            statement.setString(3, deviceId)
+            statement.executeQuery().use { rows ->
+                var latestCounter = -1L
+                var latestEventId = ""
+                var latestActive = false
+                while (rows.next()) {
+                    val counter = VersionVector.fromJson(rows.getString(2)).counters[deviceId] ?: 0L
+                    val eventId = rows.getString(3)
+                    if (counter > latestCounter || counter == latestCounter && eventId > latestEventId) {
+                        latestCounter = counter
+                        latestEventId = eventId
+                        latestActive = rows.getInt(1) != 0
+                    }
+                }
+                latestCounter >= 0 && latestActive
+            }
+        }
+    }
+
+    @Synchronized
     fun applySyncException(event: SyncExceptionEvent): Boolean = transaction { applySyncExceptionLocked(event) }
 
     @Synchronized
