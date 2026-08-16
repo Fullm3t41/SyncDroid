@@ -3,6 +3,8 @@ package com.syncdroid.app.service
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import com.syncdroid.app.storage.LowStorageApprovalStore
+import com.syncdroid.app.storage.StorageSyncWarning
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +15,7 @@ data class SyncServiceSnapshot(
     val activePeerIds: Set<String> = emptySet(),
     val syncRevision: Int = 0,
     val policyRevision: Int = 0,
+    val storageWarning: StorageSyncWarning? = null,
 )
 
 object SyncServiceController {
@@ -45,6 +48,14 @@ object SyncServiceController {
         }
     }
 
+    fun approveLowStorageSync(context: Context, warning: StorageSyncWarning.Low) {
+        LowStorageApprovalStore(context).approve(
+            warning.destinations.mapTo(mutableSetOf()) { it.destinationKey },
+        )
+        report(storageWarning = null)
+        requestRefresh(context)
+    }
+
     fun setAppInForeground(inForeground: Boolean) {
         mutableAppInForeground.value = inForeground
     }
@@ -55,6 +66,7 @@ object SyncServiceController {
         activePeerIds: Set<String> = mutableSnapshot.value.activePeerIds,
         syncCompleted: Boolean = false,
         policyChanged: Boolean = false,
+        storageWarning: StorageSyncWarning? = mutableSnapshot.value.storageWarning,
     ) {
         val current = mutableSnapshot.value
         mutableSnapshot.value = current.copy(
@@ -63,6 +75,7 @@ object SyncServiceController {
             activePeerIds = activePeerIds,
             syncRevision = current.syncRevision + if (syncCompleted) 1 else 0,
             policyRevision = current.policyRevision + if (policyChanged) 1 else 0,
+            storageWarning = storageWarning,
         )
     }
 }

@@ -7,6 +7,10 @@ import com.syncdroid.app.data.LocalFolderBindingEntity
 import com.syncdroid.app.data.RemoteFileVersionEntity
 import com.syncdroid.app.data.SyncDroidDatabase
 import com.syncdroid.app.storage.SyncFilterRules
+import com.syncdroid.app.storage.LowStorageApprovalStore
+import com.syncdroid.app.storage.StorageCapacity
+import com.syncdroid.app.storage.StorageCapacityGuard
+import com.syncdroid.app.storage.StorageSyncWarning
 import com.syncdroid.app.sync.AtomicFileApplier
 import com.syncdroid.app.sync.BlockManifest
 import com.syncdroid.app.sync.BlockManifestBuilder
@@ -49,6 +53,8 @@ class MeshSyncSession(
     private val remoteIndexes = RemoteIndexRepository(database, identity.deviceId)
     private val blockManifests = BlockManifestRepository(syncDao)
     private val fileHistory = FileHistoryRepository(appContext, database, identity.deviceId)
+    private val storageCapacity = StorageCapacityGuard(appContext)
+    private val lowStorageApprovals = LowStorageApprovalStore(appContext)
 
     suspend fun run(connection: AuthenticatedPeerConnection): MeshSyncResult {
         val remoteDeviceId = connection.peer.deviceId
@@ -80,19 +86,27 @@ class MeshSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequestCount)))
         val remoteRequestCount = connection.receiveSession<MeshSessionMessage.TransferPlan>().requestCount
 
-        if (identity.deviceId < remoteDeviceId) {
-            downloadPhase(connection, remoteDeviceId, prepared)
+        val downloadResult = if (identity.deviceId < remoteDeviceId) {
+            val result = downloadPhase(connection, remoteDeviceId, prepared)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             serveRequests(connection, remoteRequestCount)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
+            result
         } else {
             serveRequests(connection, remoteRequestCount)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
-            downloadPhase(connection, remoteDeviceId, prepared)
+            val result = downloadPhase(connection, remoteDeviceId, prepared)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
+            result
         }
         database.meshDao().updateLastSeen(groupId, remoteDeviceId, System.currentTimeMillis())
-        return MeshSyncResult(receiveResult.newChatMessages)
+        return MeshSyncResult(
+            newChatMessages = receiveResult.newChatMessages,
+            storageWarning = mergeStorageWarnings(downloadResult.warnings),
+            storageBlockedFolderIds = downloadResult.blockedFolderIds,
+            appliedChangeCount = downloadResult.appliedChangeCount,
+            replicatedStateChanged = receiveResult.replicatedStateChanged,
+        )
     }
 
     private suspend fun exchangeMetadata(connection: AuthenticatedPeerConnection): MeshReceiveResult {
@@ -214,11 +228,20 @@ class MeshSyncSession(
                 val applier = binding?.fileApplierOrNull()
                 if (applier == null) {
                     PreparedDownload(plan, null, 0)
-                } else if (plan.remoteManifest != null) {
-                    val receiver = blockReceiver(applier)
-                    PreparedDownload(plan, receiver, receiver.missingBlocks(plan.remoteManifest).size)
                 } else {
-                    PreparedDownload(plan, null, 1)
+                    val storageWarning = storageCapacity.warningForIncomingFile(
+                        binding,
+                        plan.remote.sizeBytes,
+                        lowStorageApprovals,
+                    )
+                    if (storageWarning != null) {
+                        PreparedDownload(plan, null, 0, storageWarning)
+                    } else if (plan.remoteManifest != null) {
+                        val receiver = blockReceiver(applier)
+                        PreparedDownload(plan, receiver, receiver.missingBlocks(plan.remoteManifest).size)
+                    } else {
+                        PreparedDownload(plan, null, 1)
+                    }
                 }
             }
         }
@@ -228,8 +251,11 @@ class MeshSyncSession(
         connection: AuthenticatedPeerConnection,
         remoteDeviceId: String,
         downloads: List<PreparedDownload>,
-    ) {
+    ): DownloadPhaseResult {
         val acknowledgementBlocked = mutableSetOf<String>()
+        val storageBlockedFolders = mutableSetOf<String>()
+        val storageWarnings = mutableListOf<StorageSyncWarning>()
+        var appliedChangeCount = 0
         for (prepared in downloads) {
             val plan = prepared.plan
             val folderId = plan.remote.folderId
@@ -243,6 +269,21 @@ class MeshSyncSession(
                     val applier = binding?.fileApplierOrNull()
                     if (applier == null) {
                         acknowledgementBlocked += folderId
+                        continue
+                    }
+                    val storageWarning = prepared.storageWarning ?: if (!plan.remote.deleted) {
+                        storageCapacity.warningForIncomingFile(
+                            binding,
+                            plan.remote.sizeBytes,
+                            lowStorageApprovals,
+                        )
+                    } else {
+                        null
+                    }
+                    if (storageWarning != null) {
+                        acknowledgementBlocked += folderId
+                        storageBlockedFolders += folderId
+                        storageWarnings += storageWarning
                         continue
                     }
                     val localBefore = syncDao.fileVersion(folderId, plan.relativePath)
@@ -279,6 +320,7 @@ class MeshSyncSession(
                         )
                     }
                     remoteIndexes.markRemoteApplied(remoteDeviceId, plan.remote, folderId !in acknowledgementBlocked)
+                    appliedChangeCount++
                     if (!plan.remote.deleted) {
                         fileHistory.recordRemoteApplied(
                             remote = plan.remote,
@@ -288,6 +330,7 @@ class MeshSyncSession(
                 }
             }
         }
+        return DownloadPhaseResult(storageBlockedFolders, storageWarnings, appliedChangeCount)
     }
 
     private suspend fun serveRequests(connection: AuthenticatedPeerConnection, requestCount: Int) {
@@ -349,6 +392,13 @@ class MeshSyncSession(
         val plan: FileSyncPlan,
         val blockReceiver: ResumableBlockReceiver?,
         val requestCount: Int,
+        val storageWarning: StorageSyncWarning? = null,
+    )
+
+    private data class DownloadPhaseResult(
+        val blockedFolderIds: Set<String>,
+        val warnings: List<StorageSyncWarning>,
+        val appliedChangeCount: Int,
     )
 
     private companion object {
@@ -360,7 +410,28 @@ class MeshSyncSession(
 private fun FileSyncPlan.planKey(): String =
     "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
 
-data class MeshSyncResult(val newChatMessages: List<MeshChatMessage> = emptyList())
+data class MeshSyncResult(
+    val newChatMessages: List<MeshChatMessage> = emptyList(),
+    val storageWarning: StorageSyncWarning? = null,
+    val storageBlockedFolderIds: Set<String> = emptySet(),
+    val appliedChangeCount: Int = 0,
+    val replicatedStateChanged: Boolean = false,
+)
+
+private fun mergeStorageWarnings(warnings: List<StorageSyncWarning>): StorageSyncWarning? {
+    val full = warnings.filterIsInstance<StorageSyncWarning.Full>()
+    if (full.isNotEmpty()) {
+        return StorageSyncWarning.Full(
+            destinations = full.flatMap(StorageSyncWarning.Full::destinations)
+                .distinctBy(StorageCapacity::destinationKey),
+            incomingSizeBytes = full.mapNotNull(StorageSyncWarning.Full::incomingSizeBytes).maxOrNull(),
+        )
+    }
+    val low = warnings.filterIsInstance<StorageSyncWarning.Low>()
+    return if (low.isEmpty()) null else StorageSyncWarning.Low(
+        low.flatMap(StorageSyncWarning.Low::destinations).distinctBy(StorageCapacity::destinationKey),
+    )
+}
 
 private suspend inline fun <reified T : MeshSessionMessage> AuthenticatedPeerConnection.receiveSession(): T {
     return when (val message = MeshSessionCodec.decode(receive())) {

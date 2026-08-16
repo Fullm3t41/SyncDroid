@@ -169,6 +169,8 @@ import com.syncdroid.app.storage.SyncFilterRules
 import com.syncdroid.app.storage.FolderConfiguration
 import com.syncdroid.app.storage.FolderConfigurationStore
 import com.syncdroid.app.storage.managedStorageRoots
+import com.syncdroid.app.storage.StorageSyncWarning
+import com.syncdroid.app.storage.formatStorageBytes
 import com.syncdroid.app.ui.components.LocalMesh
 import com.syncdroid.app.ui.components.SaveCard
 import com.syncdroid.app.ui.theme.SyncDroidTheme
@@ -259,6 +261,8 @@ fun SyncDroidApp() {
     val notifications = remember(context) { SyncNotificationCenter(context) }
     val syncStatusStore = remember(context) { SyncStatusStore(context) }
     val syncServiceSnapshot by SyncServiceController.snapshot.collectAsState()
+    val storageWarning = syncServiceSnapshot.storageWarning
+    var dismissedStorageWarningKey by rememberSaveable { mutableStateOf<String?>(null) }
     val appInForeground by SyncServiceController.appInForeground.collectAsState()
     val activeSyncPeerIds = syncServiceSnapshot.activePeerIds
     val lastSuccessfulSyncMillis = remember(syncStatusStore, syncServiceSnapshot.syncRevision) {
@@ -1117,7 +1121,94 @@ fun SyncDroidApp() {
                 },
             )
         }
+        if (
+            appInForeground && storageWarning != null &&
+            dismissedStorageWarningKey != storageWarning.key
+        ) {
+            StorageSyncWarningDialog(
+                warning = storageWarning,
+                onSyncAnyway = {
+                    (storageWarning as? StorageSyncWarning.Low)?.let { warning ->
+                        SyncServiceController.approveLowStorageSync(context, warning)
+                    }
+                    dismissedStorageWarningKey = null
+                },
+                onDismiss = { dismissedStorageWarningKey = storageWarning.key },
+            )
+        }
     }
+}
+
+@Composable
+private fun StorageSyncWarningDialog(
+    warning: StorageSyncWarning,
+    onSyncAnyway: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isLowStorage = warning is StorageSyncWarning.Low
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (isLowStorage) "Low storage before sync" else "Storage is full")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    if (isLowStorage) {
+                        "One or more sync destinations have less than the smaller of 10 GB or 5% of their total capacity available. SyncDroid has paused before transferring files."
+                    } else {
+                        "SyncDroid cannot safely receive more data on the destinations below. Incoming file transfers are disabled until enough space is available. Files on other devices are not deleted or changed."
+                    },
+                )
+                warning.destinations.forEach { destination ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(destination.displayName, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "${formatStorageBytes(destination.availableBytes)} available",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (isLowStorage) {
+                                Text(
+                                    "Warning threshold: ${formatStorageBytes(destination.warningThresholdBytes)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (warning is StorageSyncWarning.Full && warning.incomingSizeBytes != null) {
+                    Text(
+                        "The incoming file requires ${formatStorageBytes(warning.incomingSizeBytes)} of space before temporary transfer overhead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (isLowStorage) {
+                    Text(
+                        "If you continue, approval remains valid for these destinations until their storage state changes. A full-storage warning cannot be overridden.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = if (isLowStorage) onSyncAnyway else onDismiss) {
+                Text(if (isLowStorage) "Sync anyway" else "OK")
+            }
+        },
+        dismissButton = if (isLowStorage) {
+            { TextButton(onClick = onDismiss) { Text("Not now") } }
+        } else {
+            null
+        },
+    )
 }
 
 @Composable

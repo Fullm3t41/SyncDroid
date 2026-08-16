@@ -38,6 +38,7 @@ class MeshReplicationRepository(
             bundle.chatMessages.map(MeshChatMessage::groupId)
         require(groupIds.size == 1) { "A mesh bundle cannot mix groups" }
         val groupId = groupIds.single()
+        val replicatedItemCountBefore = replicatedItemCount(groupId)
 
         memberships.rebuildProjection(groupId, bundle.groupName)
 
@@ -66,11 +67,23 @@ class MeshReplicationRepository(
         val newChatMessages = bundle.chatMessages
             .sortedWith(compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId))
             .filter { chat.receive(it) }
-        return MeshReceiveResult(newChatMessages)
+        return MeshReceiveResult(
+            newChatMessages = newChatMessages,
+            replicatedStateChanged = replicatedItemCount(groupId) > replicatedItemCountBefore,
+        )
     }
+
+    private suspend fun replicatedItemCount(groupId: String): Int =
+        meshDao.membershipEvents(groupId).size +
+            syncDao.folderAnnouncements(groupId).size +
+            syncDao.syncExceptionEvents(groupId).size +
+            chatDao.recentMessages(groupId, MAX_REPLICATED_CHAT_MESSAGES).size
 }
 
-data class MeshReceiveResult(val newChatMessages: List<MeshChatMessage> = emptyList())
+data class MeshReceiveResult(
+    val newChatMessages: List<MeshChatMessage> = emptyList(),
+    val replicatedStateChanged: Boolean = false,
+)
 
 private const val MAX_REPLICATED_CHAT_MESSAGES = 5_000
 

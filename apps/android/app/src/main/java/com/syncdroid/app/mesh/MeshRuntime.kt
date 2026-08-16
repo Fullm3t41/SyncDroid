@@ -6,6 +6,10 @@ import com.syncdroid.app.data.SyncDroidDatabase
 import com.syncdroid.app.data.LocalFolderBindingEntity
 import com.syncdroid.app.scheduling.millisUntilNextRendezvous
 import com.syncdroid.app.sync.TransferRateSampler
+import com.syncdroid.app.storage.StorageSyncWarning
+import com.syncdroid.shared.sync.MeshRouteCandidate
+import com.syncdroid.shared.sync.initialMeshFanoutTargets
+import com.syncdroid.shared.sync.propagationFanoutTargets
 import java.io.Closeable
 import java.time.ZonedDateTime
 import java.util.concurrent.ConcurrentHashMap
@@ -23,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
 
 sealed interface MeshRuntimeEvent {
@@ -34,8 +39,18 @@ sealed interface MeshRuntimeEvent {
         val peerName: String,
         val bytesPerSecond: Long,
     ) : MeshRuntimeEvent
-    data class SyncCompleted(val peerId: String, val peerName: String, val folderIds: Set<String>) : MeshRuntimeEvent
-    data class SyncFailed(val peerId: String, val peerName: String, val reason: String) : MeshRuntimeEvent
+    data class SyncCompleted(
+        val peerId: String,
+        val peerName: String,
+        val folderIds: Set<String>,
+        val storageWarning: StorageSyncWarning? = null,
+    ) : MeshRuntimeEvent
+    data class SyncFailed(
+        val peerId: String,
+        val peerName: String,
+        val reason: String,
+        val storageWarning: StorageSyncWarning? = null,
+    ) : MeshRuntimeEvent
     data class ChatMessagesReceived(
         val count: Int,
         val authorName: String,
@@ -59,7 +74,9 @@ class MeshRuntime(
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activePeers = ConcurrentHashMap.newKeySet<String>()
-    private val peerJobs = mutableMapOf<String, Job>()
+    private val peerJobs = ConcurrentHashMap<String, Job>()
+    private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
+    private val propagationSignals = Channel<PropagationSignal>(Channel.BUFFERED)
     private val sessionStateLock = Any()
     private val closeRequested = AtomicBoolean(false)
     private var acceptingDiscoveredSessions = false
@@ -103,31 +120,49 @@ class MeshRuntime(
 
     private suspend fun runDiscoveryWindow(client: MeshPeerClient, port: Int, durationMillis: Long?) {
         val nsd = MeshNsdDiscovery(appContext, identity.deviceId)
+        val trustedIds = database.meshDao().trustedDevices(groupId).mapTo(mutableSetOf()) { it.deviceId }
+        val initialContacted = mutableSetOf<String>()
         synchronized(sessionStateLock) { acceptingDiscoveredSessions = true }
         discovery = nsd
         nsd.start(port)
         val collector = scope.launch {
-            nsd.peers.collect { peers ->
+            nsd.peers.collectLatest { peers ->
+                delay(ROUTING_SETTLE_MILLIS)
                 val removed = peerJobs.keys - peers.keys
                 removed.forEach { id ->
                     if (id !in activePeers) peerJobs.remove(id)?.cancel()
                 }
-                peers.values.forEach { peer ->
-                    if (peer.protocolMajor != 1 || peer.deviceId <= identity.deviceId) return@forEach
-                    if (peerJobs[peer.deviceId]?.isActive == true) return@forEach
-                    peerJobs[peer.deviceId] = scope.launch {
-                        while (isActive) {
-                            val connected = runCatching {
-                                client.connect(peer.address, peer.port).use { connection ->
-                                    StablePeerAuthenticator(database, identity, groupId).authenticate(connection)
-                                    require(connection.peer.deviceId == peer.deviceId) { "NSD identity does not match mesh identity" }
-                                    runSessionOnce(connection, alreadyAuthenticated = true)
-                                }
-                            }.isSuccess
-                            if (connected) break
-                            delay(CONNECTION_RETRY_MILLIS)
-                        }
-                    }
+                val eligible = peers.filterValues { it.protocolMajor == 1 && it.deviceId in trustedIds }
+                val remainingFanout = (ROUTING_FANOUT - initialContacted.size).coerceAtLeast(0)
+                val targets = initialMeshFanoutTargets(identity.deviceId, eligible.keys, ROUTING_FANOUT)
+                    .filterNot(initialContacted::contains)
+                    .take(remainingFanout)
+                targets.forEach { deviceId ->
+                    initialContacted += deviceId
+                    launchPeerConnection(client, requireNotNull(eligible[deviceId]), retry = true)
+                }
+            }
+        }
+        val propagationWorker = scope.launch {
+            for (signal in propagationSignals) {
+                delay(PROPAGATION_COALESCE_MILLIS)
+                val available = nsd.peers.value.filterValues {
+                    it.protocolMajor == 1 && it.deviceId in trustedIds
+                }
+                val targets = propagationFanoutTargets(
+                    localDeviceId = identity.deviceId,
+                    sourceDeviceId = signal.sourcePeerId,
+                    peers = available.keys.map { deviceId ->
+                        MeshRouteCandidate(
+                            deviceId = deviceId,
+                            lastSessionAtMillis = lastSessionAtMillis[deviceId] ?: 0L,
+                            active = deviceId in activePeers || peerJobs[deviceId]?.isActive == true,
+                        )
+                    },
+                    maxFanout = ROUTING_FANOUT,
+                )
+                targets.forEach { deviceId ->
+                    available[deviceId]?.let { launchPeerConnection(client, it, retry = false) }
                 }
             }
         }
@@ -140,11 +175,35 @@ class MeshRuntime(
             withContext(NonCancellable) {
                 awaitActiveSyncsBeforeDiscoveryShutdown()
                 collector.cancelAndJoin()
+                propagationWorker.cancelAndJoin()
                 peerJobs.values.forEach(Job::cancel)
                 peerJobs.clear()
                 nsd.close()
                 if (discovery === nsd) discovery = null
             }
+        }
+    }
+
+    private fun launchPeerConnection(
+        client: MeshPeerClient,
+        peer: DiscoveredMeshPeer,
+        retry: Boolean,
+    ) {
+        if (peer.deviceId in activePeers || peerJobs[peer.deviceId]?.isActive == true) return
+        peerJobs[peer.deviceId] = scope.launch {
+            do {
+                val connected = runCatching {
+                    client.connect(peer.address, peer.port).use { connection ->
+                        StablePeerAuthenticator(database, identity, groupId).authenticate(connection)
+                        require(connection.peer.deviceId == peer.deviceId) {
+                            "NSD identity does not match mesh identity"
+                        }
+                        runSessionOnce(connection, alreadyAuthenticated = true)
+                    }
+                }.isSuccess
+                if (connected || !retry) break
+                delay(CONNECTION_RETRY_MILLIS)
+            } while (isActive)
         }
     }
 
@@ -188,6 +247,10 @@ class MeshRuntime(
                 groupName,
                 rateSampler::record,
             ).run(connection)
+            lastSessionAtMillis[connection.peer.deviceId] = System.currentTimeMillis()
+            if (result.appliedChangeCount > 0 || result.replicatedStateChanged) {
+                propagationSignals.trySend(PropagationSignal(connection.peer.deviceId))
+            }
             if (result.newChatMessages.isNotEmpty()) {
                 val latest = result.newChatMessages.maxWith(
                     compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId),
@@ -202,8 +265,15 @@ class MeshRuntime(
             }
             val syncedFolders = database.syncDao().configuredBindings(identity.deviceId, groupId)
                 .map(LocalFolderBindingEntity::folderId)
-                .filterTo(mutableSetOf()) { database.syncDao().unresolvedConflictCount(it) == 0 }
-            onEvent(MeshRuntimeEvent.SyncCompleted(connection.peer.deviceId, peerName, syncedFolders))
+                .filterTo(mutableSetOf()) {
+                    it !in result.storageBlockedFolderIds && database.syncDao().unresolvedConflictCount(it) == 0
+                }
+            onEvent(MeshRuntimeEvent.SyncCompleted(
+                connection.peer.deviceId,
+                peerName,
+                syncedFolders,
+                result.storageWarning,
+            ))
         } catch (error: Throwable) {
             Log.e(TAG, "Mesh sync with $peerName failed", error)
             onEvent(MeshRuntimeEvent.SyncFailed(
@@ -232,9 +302,14 @@ class MeshRuntime(
     private companion object {
         const val ACTIVE_SYNC_DRAIN_POLL_MILLIS = 100L
         const val CONNECTION_RETRY_MILLIS = 5_000L
+        const val PROPAGATION_COALESCE_MILLIS = 300L
+        const val ROUTING_SETTLE_MILLIS = 750L
+        const val ROUTING_FANOUT = 2
         const val TAG = "SyncDroidMesh"
     }
 }
+
+private data class PropagationSignal(val sourcePeerId: String)
 
 internal fun shouldRunContinuousDiscovery(appInForeground: Boolean, scheduledDiscoveryEnabled: Boolean): Boolean =
     appInForeground || !scheduledDiscoveryEnabled

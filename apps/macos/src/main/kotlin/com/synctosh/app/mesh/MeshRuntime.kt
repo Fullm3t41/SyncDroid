@@ -1,6 +1,9 @@
 package com.synctosh.app.mesh
 
 import com.syncdroid.shared.protocol.PairingCompletionMessage
+import com.syncdroid.shared.sync.MeshRouteCandidate
+import com.syncdroid.shared.sync.initialMeshFanoutTargets
+import com.syncdroid.shared.sync.propagationFanoutTargets
 import com.synctosh.app.model.MeshPeer
 import com.synctosh.app.platform.AppPreferences
 import java.io.Closeable
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -58,6 +62,8 @@ class MeshRuntime(
     private var pairingServer: MeshPeerServer? = null
     private var meshServer: MeshPeerServer? = null
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
+    private val automaticallyContactedPeers = ConcurrentHashMap.newKeySet<String>()
+    private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
     private val connectionJobs = mutableMapOf<String, Job>()
     private val syncMutex = Mutex()
     private val fileHistory = FileHistoryRepository(store, identity.deviceId)
@@ -72,10 +78,11 @@ class MeshRuntime(
         store.profile()?.let(::startMeshNetworking)
         scope.launch {
             combine(bonjour.peers, bonjour.pairingOffers, lanDiscovery.offers) { peers, _, _ -> peers }
-                .collect { peers ->
+                .collectLatest { peers ->
                     refresh(mutableState.value.status)
-                    if (!discoveryActive) return@collect
-                    val profile = store.profile() ?: return@collect
+                    if (!discoveryActive) return@collectLatest
+                    delay(ROUTING_SETTLE_MILLIS)
+                    val profile = store.profile() ?: return@collectLatest
                     connectToAvailablePeers(profile, peers.values, initiatorOrdering = true)
                 }
         }
@@ -351,15 +358,24 @@ class MeshRuntime(
                 var transferred = 0L
                 val startedAt = System.nanoTime()
                 mutableState.value = mutableState.value.copy(status = "Scanning configured folders…")
-                MeshFileSyncSession(store, identity, profile) { bytes ->
+                val result = MeshFileSyncSession(store, identity, profile) { bytes ->
                     transferred += bytes
                     val seconds = ((System.nanoTime() - startedAt) / 1_000_000_000.0).coerceAtLeast(0.1)
                     mutableState.value = mutableState.value.copy(
                         status = "Syncing files · ${formatTransferRate((transferred / seconds).toLong())}",
                     )
                 }.run(connection, remoteId)
+                lastSessionAtMillis[remoteId] = System.currentTimeMillis()
                 val conflicts = store.unresolvedConflicts().size
                 refresh(if (conflicts == 0) "Files synced" else "$conflicts file conflict${if (conflicts == 1) "" else "s"} need review")
+                if (result.appliedChangeCount > 0 || result.metadataChanged) {
+                    connectToAvailablePeers(
+                        profile,
+                        bonjour.peers.value.values,
+                        initiatorOrdering = false,
+                        sourcePeerId = remoteId,
+                    )
+                }
             }
         } finally {
             activeSessions.remove(remoteId)
@@ -370,11 +386,35 @@ class MeshRuntime(
         profile: MeshProfile,
         peers: Collection<DiscoveredPeer>,
         initiatorOrdering: Boolean,
+        sourcePeerId: String? = null,
     ) {
         if (!discoveryActive) return
-        peers.forEach { peer ->
-            if (peer.protocolMajor != 1 || (initiatorOrdering && identity.deviceId >= peer.deviceId)) return@forEach
-            if (store.devices(profile.groupId).none { it.trusted && it.deviceId == peer.deviceId }) return@forEach
+        val trustedIds = store.devices(profile.groupId)
+            .filter(TrustedDevice::trusted)
+            .mapTo(mutableSetOf(), TrustedDevice::deviceId)
+        val available = peers.filter { it.protocolMajor == 1 && it.deviceId in trustedIds }
+            .associateBy(DiscoveredPeer::deviceId)
+        val targetIds = if (initiatorOrdering) {
+            val remaining = (ROUTING_FANOUT - automaticallyContactedPeers.size).coerceAtLeast(0)
+            initialMeshFanoutTargets(identity.deviceId, available.keys, ROUTING_FANOUT)
+                .filterNot(automaticallyContactedPeers::contains)
+                .take(remaining)
+                .also { automaticallyContactedPeers.addAll(it) }
+        } else {
+            propagationFanoutTargets(
+                localDeviceId = identity.deviceId,
+                sourceDeviceId = sourcePeerId,
+                peers = available.keys.map { deviceId ->
+                    MeshRouteCandidate(
+                        deviceId,
+                        lastSessionAtMillis[deviceId] ?: 0L,
+                        connectionJobs[deviceId]?.isActive == true || deviceId in activeSessions,
+                    )
+                },
+                maxFanout = ROUTING_FANOUT,
+            )
+        }
+        targetIds.mapNotNull(available::get).forEach { peer ->
             if (connectionJobs[peer.deviceId]?.isActive == true || peer.deviceId in activeSessions) return@forEach
             connectionJobs[peer.deviceId] = scope.launch {
                 runCatching {
@@ -459,6 +499,7 @@ class MeshRuntime(
     private fun setDiscoveryActive(active: Boolean) {
         if (discoveryActive == active) return
         discoveryActive = active
+        if (active) automaticallyContactedPeers.clear()
         bonjour.setMeshEnabled(active)
     }
 
@@ -469,6 +510,9 @@ class MeshRuntime(
         lanDiscovery.close(); bonjour.close(); store.close(); scope.cancel()
     }
 }
+
+private const val ROUTING_FANOUT = 2
+private const val ROUTING_SETTLE_MILLIS = 750L
 
 private data class PairingCodeOffer(
     val code: String,

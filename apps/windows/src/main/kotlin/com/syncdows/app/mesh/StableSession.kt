@@ -73,11 +73,13 @@ class MeshFileSyncSession(
 ) {
     private val history = FileHistoryRepository(store, identity.deviceId)
 
-    suspend fun run(connection: AuthenticatedPeerConnection, remoteDeviceId: String) {
+    suspend fun run(connection: AuthenticatedPeerConnection, remoteDeviceId: String): MeshFileSyncResult {
         history.cleanupExpired()
+        val metadataCountBefore = store.exportBundle().replicatedItemCount()
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(MeshWireCodec.encode(store.exportBundle()))))
         val remoteMetadata = connection.receiveSession<MeshSessionMessage.Metadata>()
         store.importBundle(MeshWireCodec.decode(remoteMetadata.bundle))
+        val metadataChanged = store.exportBundle().replicatedItemCount() > metadataCountBefore
 
         val engine = FileSyncEngine(store, identity, profile)
         engine.scanConfiguredFolders()
@@ -103,18 +105,21 @@ class MeshFileSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequests)))
         val remoteRequests = connection.receiveSession<MeshSessionMessage.TransferPlan>().requestCount
 
-        if (identity.deviceId < remoteDeviceId) {
-            downloadPhase(connection, remoteDeviceId, prepared, engine)
+        val appliedChangeCount = if (identity.deviceId < remoteDeviceId) {
+            val count = downloadPhase(connection, remoteDeviceId, prepared, engine)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             serveRequests(connection, remoteRequests, engine)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
+            count
         } else {
             serveRequests(connection, remoteRequests, engine)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
-            downloadPhase(connection, remoteDeviceId, prepared, engine)
+            val count = downloadPhase(connection, remoteDeviceId, prepared, engine)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
+            count
         }
         store.markSeen(profile.groupId, remoteDeviceId)
+        return MeshFileSyncResult(appliedChangeCount, metadataChanged)
     }
 
     private suspend fun downloadPhase(
@@ -122,8 +127,9 @@ class MeshFileSyncSession(
         remoteDeviceId: String,
         downloads: List<PreparedDownload>,
         engine: FileSyncEngine,
-    ) {
+    ): Int {
         val acknowledgementBlocked = mutableSetOf<String>()
+        var appliedChangeCount = 0
         downloads.forEach { prepared ->
             val plan = prepared.plan
             val folderId = plan.remote.folderId
@@ -176,10 +182,12 @@ class MeshFileSyncSession(
                     } else {
                         engine.markRemoteApplied(remoteDeviceId, plan.remote, folderId !in acknowledgementBlocked)
                     }
+                    appliedChangeCount++
                     if (!plan.remote.deleted) history.recordSynced(plan.remote.copy(relativePath = plan.relativePath))
                 }
             }
         }
+        return appliedChangeCount
     }
 
     private suspend fun serveRequests(
@@ -211,6 +219,14 @@ class MeshFileSyncSession(
         val requestCount: Int,
     )
 }
+
+data class MeshFileSyncResult(
+    val appliedChangeCount: Int,
+    val metadataChanged: Boolean,
+)
+
+private fun MeshStateBundle.replicatedItemCount(): Int =
+    membershipEvents.size + folderAnnouncements.size + syncExceptionEvents.size + chatMessages.size
 
 class MetadataOnlyMeshSession(
     private val store: MeshStore,

@@ -194,12 +194,15 @@ fun ExpandableInfoCard(
     summary: String,
     expanded: Boolean,
     onToggle: () -> Unit,
+    containerColor: Color? = null,
     body: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().animateContentSize().clickable(onClick = onToggle),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(
+            containerColor = containerColor ?: MaterialTheme.colorScheme.surface,
+        ),
     ) {
         Column(Modifier.padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -242,6 +245,7 @@ fun LocalMeshView(
     ) {
         val orbit = min(maxWidth.value, maxHeight.value) * 0.34f
         val nodeSize = if (peers.size > 8) 38.dp else 48.dp
+        val offlineLabelWidth = 136.dp
         val centreSize = 82.dp
 
         Canvas(Modifier.matchParentSize()) {
@@ -264,30 +268,32 @@ fun LocalMeshView(
 
         peers.forEachIndexed { index, peer ->
             val angle = -PI / 2 + (2 * PI * index / peers.size.coerceAtLeast(1))
-            val x = maxWidth / 2 + (orbit * cos(angle)).dp - nodeSize / 2
-            val y = maxHeight / 2 + (orbit * sin(angle)).dp - nodeSize / 2
-            Column(
-                modifier = Modifier.offset(x, y),
-                horizontalAlignment = Alignment.CenterHorizontally,
+            val centreX = maxWidth / 2 + (orbit * cos(angle)).dp
+            val centreY = maxHeight / 2 + (orbit * sin(angle)).dp
+            Surface(
+                modifier = Modifier
+                    .offset(centreX - nodeSize / 2, centreY - nodeSize / 2)
+                    .size(nodeSize),
+                color = if (peer.online) spoke else line,
+                shape = CircleShape,
             ) {
-                Surface(
-                    modifier = Modifier.size(nodeSize),
-                    color = if (peer.online) spoke else line,
-                    shape = CircleShape,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(peer.initials, color = Color.White, style = MaterialTheme.typography.labelLarge)
-                    }
+                Box(contentAlignment = Alignment.Center) {
+                    Text(peer.initials, color = Color.White, style = MaterialTheme.typography.labelLarge)
                 }
-                if (!peer.online) {
-                    Spacer(Modifier.height(5.dp))
-                    Text(
-                        peer.lastOnlineAtMillis.lastOnlineLabel(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = muted,
-                        textAlign = TextAlign.Center,
-                    )
-                }
+            }
+            if (!peer.online) {
+                Text(
+                    text = peer.lastOnlineAtMillis.lastOnlineLabel(),
+                    modifier = Modifier
+                        .offset(
+                            centreX - offlineLabelWidth / 2,
+                            centreY + nodeSize / 2 + 5.dp,
+                        )
+                        .width(offlineLabelWidth),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = muted,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
 

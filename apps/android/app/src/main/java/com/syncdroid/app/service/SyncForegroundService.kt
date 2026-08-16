@@ -22,6 +22,10 @@ import com.syncdroid.app.scheduling.DiscoveryPolicyStore
 import com.syncdroid.app.sync.SyncStatusStore
 import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.formatTransferRate
+import com.syncdroid.app.storage.LowStorageApprovalStore
+import com.syncdroid.app.storage.StorageCapacityGuard
+import com.syncdroid.app.storage.StorageSyncWarning
+import com.syncdroid.app.storage.formatStorageBytes
 import com.syncdroid.app.wifi.WifiConnectionMonitor
 import com.syncdroid.app.wifi.WifiConnectionState
 import com.syncdroid.app.wifi.WifiSyncPolicyStore
@@ -43,6 +47,8 @@ class SyncForegroundService : Service() {
     private lateinit var notification: SyncServiceNotification
     private lateinit var eventNotifications: SyncNotificationCenter
     private lateinit var wifiMonitor: WifiConnectionMonitor
+    private lateinit var storageCapacity: StorageCapacityGuard
+    private lateinit var lowStorageApprovals: LowStorageApprovalStore
     private var wifiConnection = WifiConnectionState()
     private var runtime: MeshRuntime? = null
     private var runtimeKey: RuntimeKey? = null
@@ -60,6 +66,8 @@ class SyncForegroundService : Service() {
         identity = AndroidDeviceIdentity()
         notification = SyncServiceNotification(this)
         eventNotifications = SyncNotificationCenter(this)
+        storageCapacity = StorageCapacityGuard(this)
+        lowStorageApprovals = LowStorageApprovalStore(this)
         serviceScope.launch { FileHistoryRepository(this@SyncForegroundService, database, identity.deviceId).cleanupExpired() }
 
         ServiceCompat.startForeground(
@@ -164,24 +172,35 @@ class SyncForegroundService : Service() {
             peerTransferRates.clear()
 
             when {
-                !permissionGranted -> setStatus(
-                    "Sync paused",
-                    "Open SyncDroid and allow nearby Wi-Fi access",
-                )
-                !wifiConnection.isWifiConnected -> setStatus(
-                    "Sync paused",
-                    "Connect this device to Wi-Fi",
-                )
-                !syncAllowed -> setStatus(
-                    "Sync paused on this network",
-                    wifiConnection.ssid?.let { "$it is not registered for syncing" }
-                        ?: "The current Wi-Fi network is not registered",
-                )
-                !ensureLocalMembership(profile) -> setStatus(
-                    "Mesh needs attention",
-                    "Open SyncDroid to repair or join the mesh",
-                )
-                else -> startRuntime(profile, discoveryPolicy, force)
+                !permissionGranted -> {
+                    clearStorageWarning()
+                    setStatus("Sync paused", "Open SyncDroid and allow nearby Wi-Fi access")
+                }
+                !wifiConnection.isWifiConnected -> {
+                    clearStorageWarning()
+                    setStatus("Sync paused", "Connect this device to Wi-Fi")
+                }
+                !syncAllowed -> {
+                    clearStorageWarning()
+                    setStatus(
+                        "Sync paused on this network",
+                        wifiConnection.ssid?.let { "$it is not registered for syncing" }
+                            ?: "The current Wi-Fi network is not registered",
+                    )
+                }
+                !ensureLocalMembership(profile) -> {
+                    clearStorageWarning()
+                    setStatus("Mesh needs attention", "Open SyncDroid to repair or join the mesh")
+                }
+                else -> {
+                    val storageWarning = storageWarningBeforeSync(profile)
+                    if (storageWarning == null) clearStorageWarning()
+                    startRuntime(profile, discoveryPolicy, force)
+                    if (storageWarning != null) {
+                        SyncServiceController.report(storageWarning = storageWarning)
+                        showStorageWarningStatus(storageWarning)
+                    }
+                }
             }
             runtimeKey = key
         }
@@ -271,7 +290,13 @@ class SyncForegroundService : Service() {
                 activePeers.remove(event.peerId)
                 peerTransferRates.remove(event.peerId)
                 SyncStatusStore(this).recordSuccessfulSync(event.folderIds)
-                if (activePeers.isEmpty()) {
+                val currentStorageWarning = event.storageWarning
+                    ?: SyncServiceController.snapshot.value.storageWarning
+                if (currentStorageWarning != null) {
+                    SyncServiceController.report(storageWarning = currentStorageWarning)
+                    showStorageWarningStatus(currentStorageWarning)
+                } else if (activePeers.isEmpty()) {
+                    eventNotifications.clearStorageWarning()
                     setStatus("Files are up to date", "Last synced with ${event.peerName} at ${formatTime(System.currentTimeMillis())}")
                 } else {
                     showActiveSyncStatus()
@@ -311,6 +336,34 @@ class SyncForegroundService : Service() {
         setStatus(title, detail)
     }
 
+    private suspend fun storageWarningBeforeSync(profile: LocalMeshProfile): StorageSyncWarning? {
+        val bindings = database.syncDao().configuredBindings(identity.deviceId, profile.groupId)
+        val names = bindings.associate { binding ->
+            binding.folderId to (database.syncDao().getFolder(binding.folderId)?.displayName ?: "Folder")
+        }
+        return storageCapacity.warningBeforeSync(bindings, lowStorageApprovals, names)
+    }
+
+    private fun showStorageWarningStatus(warning: StorageSyncWarning) {
+        eventNotifications.showStorageWarning(warning)
+        val lowestAvailable = warning.destinations.minOfOrNull { it.availableBytes } ?: 0L
+        when (warning) {
+            is StorageSyncWarning.Low -> setStatus(
+                "Low storage · approval required",
+                "${formatStorageBytes(lowestAvailable)} free · open SyncDroid to continue",
+            )
+            is StorageSyncWarning.Full -> setStatus(
+                "Incoming sync paused · storage full",
+                "Free storage space before receiving more files",
+            )
+        }
+    }
+
+    private fun clearStorageWarning() {
+        SyncServiceController.report(storageWarning = null)
+        eventNotifications.clearStorageWarning()
+    }
+
     private fun runPendingReconcileIfIdle() {
         if (activePeers.isNotEmpty() || !reconcilePending) return
         val force = pendingReconcileForce
@@ -328,10 +381,12 @@ class SyncForegroundService : Service() {
     private fun publishNotification() {
         val policy = DiscoveryPolicyStore(this).load()
         val foregroundDetail = if (
-            SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty()
+            SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty() &&
+            SyncServiceController.snapshot.value.storageWarning == null
         ) "Discovery stays active while SyncDroid is open" else statusDetail
         val foregroundTitle = if (
-            SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty()
+            SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty() &&
+            SyncServiceController.snapshot.value.storageWarning == null
         ) "Looking for mesh devices" else statusTitle
         getSystemService(android.app.NotificationManager::class.java).notify(
             SyncServiceNotification.NOTIFICATION_ID,

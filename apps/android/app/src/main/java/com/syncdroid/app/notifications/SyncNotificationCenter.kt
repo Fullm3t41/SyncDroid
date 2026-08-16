@@ -13,10 +13,13 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.syncdroid.app.MainActivity
 import com.syncdroid.app.R
+import com.syncdroid.app.storage.StorageSyncWarning
+import com.syncdroid.app.storage.formatStorageBytes
 
 class SyncNotificationCenter(context: Context) {
     private val appContext = context.applicationContext
     private val manager = NotificationManagerCompat.from(appContext)
+    private var lastStorageWarningKey: String? = null
 
     init { createChannels() }
 
@@ -96,6 +99,37 @@ class SyncNotificationCenter(context: Context) {
             .build())
     }
 
+    @SuppressLint("MissingPermission")
+    fun showStorageWarning(warning: StorageSyncWarning) {
+        if (!canNotify()) return
+        if (lastStorageWarningKey != null && lastStorageWarningKey != warning.key) {
+            manager.cancel(STORAGE_NOTIFICATION_ID)
+        }
+        lastStorageWarningKey = warning.key
+        val lowestAvailable = warning.destinations.minOfOrNull { it.availableBytes } ?: 0L
+        val full = warning is StorageSyncWarning.Full
+        val title = if (full) "Incoming sync paused · storage full" else "Low storage · approval required"
+        val detail = if (full) {
+            "Free storage space before receiving more files."
+        } else {
+            "${formatStorageBytes(lowestAvailable)} available. Tap to approve or pause incoming sync."
+        }
+        manager.notify(STORAGE_NOTIFICATION_ID, NotificationCompat.Builder(appContext, CHANNEL_ACTIONS)
+            .setSmallIcon(R.drawable.ic_syncdroid)
+            .setContentTitle(title)
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(openAppIntent())
+            .build())
+    }
+
+    fun clearStorageWarning() {
+        lastStorageWarningKey = null
+        manager.cancel(STORAGE_NOTIFICATION_ID)
+    }
+
     private fun canNotify(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             appContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -130,5 +164,6 @@ class SyncNotificationCenter(context: Context) {
         const val SYNC_NOTIFICATION_ID = 1001
         const val ACTION_NOTIFICATION_ID = 1002
         const val CHAT_NOTIFICATION_ID = 1003
+        const val STORAGE_NOTIFICATION_ID = 1004
     }
 }

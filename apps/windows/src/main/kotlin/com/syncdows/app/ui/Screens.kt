@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -119,16 +120,23 @@ fun SyncScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onSyncNow, enabled = meshName != null && !busy) {
-                        Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text("Sync now")
-                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedButton(onClick = onCloseToNotificationBar) {
                         Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text("Close to notification bar.")
+                        Text("Close to system tray")
+                    }
+                    Button(
+                        onClick = onSyncNow,
+                        enabled = meshName != null && !busy,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.onBackground,
+                            contentColor = MaterialTheme.colorScheme.background,
+                        ),
+                    ) {
+                        Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(7.dp))
+                        Text("Sync now")
                     }
                 }
             }
@@ -287,16 +295,38 @@ fun FoldersScreen(
             item {
                 val accessCard: @Composable () -> Unit = {
                     ExpandableInfoCard(
-                        title = "How folder access works",
-                        summary = "SyncDows only reads folders you explicitly approve",
+                        title = "How folder sync works",
+                        summary = "Folder access, updates, exceptions, reviews and recovery",
                         expanded = explanationExpanded,
                         onToggle = { explanationExpanded = !explanationExpanded },
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     ) {
-                        Text(
-                            "Windows asks for access once. SyncDows then provides its own file browser beneath the approved location and remembers that permission securely.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            FolderGuideSection(
+                                title = "Folder access",
+                                body = "Each mesh folder has a shared name and set of filters, but every device chooses where its local copy lives. When a folder is announced by another device, it appears as Configure. SyncDows only reads and writes the local location you select.",
+                            )
+                            FolderGuideSection(
+                                title = "Declining a folder",
+                                body = "Decline if you do not want this folder on this PC. It remains marked Declined, does not download its contents here and does not affect copies on other devices. You can configure it later by choosing a local folder.",
+                            )
+                            FolderGuideSection(
+                                title = "Choosing which file is newer",
+                                body = "SyncDows compares each file's version history and SHA-256 content hash rather than relying only on its last-edited time. A change that follows the version already known by the mesh becomes the update. Identical content is skipped, even if timestamps differ, so receiving a file does not create an endless sync back to its sender.",
+                            )
+                            FolderGuideSection(
+                                title = "When review is required",
+                                body = "A review is required when two devices independently change the same file before either receives the other's update. Neither version can safely be called newer, so SyncDows records a conflict instead of silently overwriting one. Conflict review lets you keep the local version, keep the incoming version, or preserve both; Keep both gives the additional copy a numbered suffix such as _1 before the file extension. Your decision becomes the next version shared with the mesh.",
+                            )
+                            FolderGuideSection(
+                                title = "Deletions and exceptions",
+                                body = "Normal folder deletions are recorded and shared with the mesh. In an Overwrite-only folder, deleting a file instead creates an exception: the file is not deleted from other devices and is not downloaded back to this one. Exceptions can be undone individually. Once every participating device reports the file absent, the mesh recognises the deletion as complete and removes the exception automatically.",
+                            )
+                            FolderGuideSection(
+                                title = "30-day data recovery",
+                                body = "When possible, SyncDows saves a recovery copy before applying a deletion. Open Settings > File history on the PC holding that copy to restore it within 30 days. A restored file is scanned as a new update and can sync back to the other devices.",
+                            )
+                        }
                     }
                 }
                 val folderList: @Composable () -> Unit = {
@@ -326,6 +356,22 @@ fun FoldersScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FolderGuideSection(title: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
