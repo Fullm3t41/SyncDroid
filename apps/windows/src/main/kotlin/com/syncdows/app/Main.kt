@@ -49,7 +49,7 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
         width = preferences.windowWidth.dp,
         height = preferences.windowHeight.dp,
     )
-    val appIcon = painterResource("syncdroid-icon-source.png")
+    val appIcon = painterResource("syncdows-icon-source.png")
 
     fun saveWindowState() {
         preferences.windowWidth = windowState.size.width.value
