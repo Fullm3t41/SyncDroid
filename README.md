@@ -75,4 +75,4 @@ Release downloads are self-contained: SyncDroid is provided as an Android APK, S
 
 The local peer mesh, file transfer engine, resumable blocks, history, recovery, chat and conflict foundations are implemented. Google Drive and OneDrive adapters, broader release hardening, code signing/notarization and SyncDeck remain ongoing work.
 
-Technical architecture and protocol notes are maintained in [`docs/cross-platform-protocol.md`](docs/cross-platform-protocol.md) and [`WINDOWS_BUILD_PLAN.md`](WINDOWS_BUILD_PLAN.md).
+Technical architecture and protocol notes are maintained in [`docs/cross-platform-protocol.md`](docs/cross-platform-protocol.md) and [`docs/update-system.md`](docs/update-system.md).
