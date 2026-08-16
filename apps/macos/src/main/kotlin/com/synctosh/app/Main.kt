@@ -2,6 +2,7 @@ package com.synctosh.app
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -16,18 +17,38 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.synctosh.app.platform.AppPreferences
 import com.synctosh.app.platform.MacDeviceName
+import com.synctosh.app.platform.MacAppPaths
+import com.synctosh.app.platform.MacUpdateInstaller
+import com.synctosh.app.platform.UpdateConfig
 import com.synctosh.app.mesh.MeshRuntime
 import com.synctosh.app.mesh.SUPPORTED_DISCOVERY_INTERVALS
 import com.synctosh.app.mesh.SUPPORTED_DISCOVERY_WINDOWS
 import com.synctosh.app.mesh.discoveryIntervalLabel
 import com.synctosh.app.mesh.discoveryWindowLabel
 import com.synctosh.app.ui.SyncToshApp
+import com.syncdroid.shared.update.LastUpdateCheckStore
+import com.syncdroid.shared.update.ReleaseUpdateService
+import com.syncdroid.shared.update.UpdatePlatform
 
 fun main() = application {
     val preferences = remember { AppPreferences() }
-    val meshRuntime = remember {
-        MeshRuntime(preferences, deviceName = { preferences.deviceName ?: MacDeviceName.current() })
+    val updateService = remember {
+        ReleaseUpdateService(
+            currentVersion = UpdateConfig.CURRENT_VERSION,
+            platform = UpdatePlatform.MacOsArm64,
+            cacheDirectory = MacAppPaths.updates,
+            lastCheck = { preferences.lastUpdateCheckMillis },
+            lastCheckStore = LastUpdateCheckStore { preferences.lastUpdateCheckMillis = it },
+        )
     }
+    val meshRuntime = remember {
+        MeshRuntime(
+            preferences,
+            deviceName = { preferences.deviceName ?: MacDeviceName.current() },
+            updateCache = updateService,
+        )
+    }
+    LaunchedEffect(updateService) { updateService.runDailyChecks() }
     val meshState by meshRuntime.state.collectAsState()
     var windowVisible by remember { mutableStateOf(true) }
     var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
@@ -137,6 +158,8 @@ fun main() = application {
                 onDiscoveryIntervalChanged = ::updateDiscoveryInterval,
                 onDiscoveryWindowChanged = ::updateDiscoveryWindow,
                 onCloseToNotificationBar = ::closeToNotificationBar,
+                updateService = updateService,
+                onInstallUpdate = MacUpdateInstaller::open,
             )
         }
     }

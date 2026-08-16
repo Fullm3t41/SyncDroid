@@ -25,6 +25,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -72,6 +73,7 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -175,6 +177,8 @@ import com.syncdroid.app.ui.components.LocalMesh
 import com.syncdroid.app.ui.components.SaveCard
 import com.syncdroid.app.ui.theme.SyncDroidTheme
 import com.syncdroid.app.ui.theme.ThemePreferenceStore
+import com.syncdroid.app.update.AndroidUpdateInstaller
+import com.syncdroid.app.update.AndroidUpdateProvider
 import com.syncdroid.app.wifi.WifiSyncPolicy
 import com.syncdroid.app.wifi.WifiSyncPolicyStore
 import com.syncdroid.app.wifi.hasWifiRuntimePermission
@@ -202,6 +206,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import androidx.core.view.WindowCompat
+import com.syncdroid.shared.update.UpdateState
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
     Sync("Sync", Icons.Rounded.Sync),
@@ -219,6 +224,8 @@ fun SyncDroidApp() {
     val view = LocalView.current
     val systemDarkTheme = isSystemInDarkTheme()
     val themePreferenceStore = remember(context) { ThemePreferenceStore(context) }
+    val updateService = remember(context) { AndroidUpdateProvider.get(context) }
+    val updateState by updateService.state.collectAsState()
     var darkTheme by rememberSaveable {
         mutableStateOf(themePreferenceStore.load(systemDarkTheme))
     }
@@ -288,6 +295,7 @@ fun SyncDroidApp() {
     }
     val meshChat = remember(database, identity.deviceId) { MeshChatRepository(database, identity) }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(updateService) { updateService.checkForUpdate(force = false) }
     LaunchedEffect(fileHistory) { fileHistory.cleanupExpired() }
     val localFolderViews by remember(database, identity.deviceId, meshProfile.groupId) {
         database.syncDao().observeLocalFolderViews(identity.deviceId, meshProfile.groupId)
@@ -649,6 +657,17 @@ fun SyncDroidApp() {
             }
             pendingSystemUri = uri.toString()
             pendingSystemName = folderDisplayName(context, uri)
+        }
+    }
+    val updateBundleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    context.contentResolver.openInputStream(uri).use { input ->
+                        updateService.importOfflineBundle(requireNotNull(input) { "Could not open the selected update bundle" })
+                    }
+                }
+            }
         }
     }
     val allFilesSettingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -1023,6 +1042,20 @@ fun SyncDroidApp() {
                         modifier = Modifier.padding(scaffoldPadding),
                     )
                     MainTab.Settings -> SettingsScreen(
+                        updateState = updateState,
+                        onUpdateAction = {
+                            when (val current = updateState) {
+                                is UpdateState.Available -> scope.launch { updateService.downloadUpdate() }
+                                is UpdateState.Ready -> AndroidUpdateInstaller.install(context, current.installer)
+                                is UpdateState.Failed -> scope.launch {
+                                    if (current.updateStillAvailable) updateService.downloadUpdate()
+                                    else updateService.checkForUpdate()
+                                }
+                                is UpdateState.Idle, is UpdateState.UpToDate -> scope.launch { updateService.checkForUpdate() }
+                                is UpdateState.Checking, is UpdateState.Downloading -> Unit
+                            }
+                        },
+                        onImportUpdateBundle = { updateBundleLauncher.launch("*/*") },
                         darkTheme = darkTheme,
                         onDarkThemeChange = { selectedDarkTheme ->
                             darkTheme = selectedDarkTheme
@@ -2576,6 +2609,9 @@ private fun formatHistoryDate(timestamp: Long): String =
 
 @Composable
 private fun SettingsScreen(
+    updateState: UpdateState,
+    onUpdateAction: () -> Unit,
+    onImportUpdateBundle: () -> Unit,
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
     onOpenPowerSettings: () -> Unit,
@@ -2584,6 +2620,14 @@ private fun SettingsScreen(
     cloudScope: CloudSyncScope,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val advancedSettings = remember(context) {
+        context.getSharedPreferences("advanced_settings", Context.MODE_PRIVATE)
+    }
+    var offlineUpdateImportUnlocked by remember {
+        mutableStateOf(advancedSettings.getBoolean("offline_update_import_unlocked", false))
+    }
+    var aboutTapCount by remember { mutableIntStateOf(0) }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
@@ -2630,13 +2674,95 @@ private fun SettingsScreen(
                     detail = "Wi-Fi rules, schedules and ping windows",
                     onClick = onOpenPowerSettings,
                 )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+            }
+        }
+        item {
+            SettingsCard {
                 SettingsActionRow(
                     icon = Icons.Rounded.Info,
                     title = "About SyncDroid",
                     detail = "Local-first · version ${BuildConfig.VERSION_NAME}",
-                    onClick = {},
+                    onClick = {
+                        if (!offlineUpdateImportUnlocked) {
+                            aboutTapCount++
+                            if (aboutTapCount >= 10) {
+                                offlineUpdateImportUnlocked = true
+                                advancedSettings.edit().putBoolean("offline_update_import_unlocked", true).apply()
+                            }
+                        }
+                    },
                 )
+            }
+        }
+        item { UpdateCard(updateState, onUpdateAction) }
+        if (offlineUpdateImportUnlocked) {
+            item {
+                SettingsCard {
+                    SettingsActionRow(
+                        icon = Icons.Rounded.SystemUpdateAlt,
+                        title = "Import offline update bundle",
+                        detail = "Verify and seed a signed .sdu release across the mesh",
+                        onClick = onImportUpdateBundle,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateCard(state: UpdateState, onClick: () -> Unit) {
+    val activeGreen = Color(0xFFB9EED8)
+    val highlight = state is UpdateState.Available || state is UpdateState.Ready
+    val progress = (state as? UpdateState.Downloading)?.progress ?: 0f
+    val enabled = state !is UpdateState.Checking && state !is UpdateState.Downloading
+    val title = when (state) {
+        is UpdateState.Available -> "Update available"
+        is UpdateState.Downloading -> "Downloading update"
+        is UpdateState.Ready -> "Update ready"
+        is UpdateState.Checking -> "Checking for updates"
+        is UpdateState.UpToDate -> "SyncDroid is up to date"
+        is UpdateState.Failed -> if (state.updateStillAvailable) "Update download paused" else "Update check unavailable"
+        is UpdateState.Idle -> "Software update"
+    }
+    val detail = when (state) {
+        is UpdateState.Available -> "Version ${state.manifest.version} · Tap to download"
+        is UpdateState.Downloading -> "${(state.progress * 100).toInt()}% · ${state.source.name}"
+        is UpdateState.Ready -> "Version ${state.manifest.version} · Tap to install"
+        is UpdateState.Checking -> "Looking for the latest GitHub release"
+        is UpdateState.UpToDate -> "Version ${state.currentVersion} · Tap to check again"
+        is UpdateState.Failed -> "${state.message} · Tap to retry"
+        is UpdateState.Idle -> "Version ${state.currentVersion} · Tap to check"
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (highlight) activeGreen.copy(alpha = 0.20f) else MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        Box {
+            if (state is UpdateState.Downloading) {
+                Canvas(Modifier.fillMaxWidth(progress).height(74.dp)) {
+                    drawRect(activeGreen.copy(alpha = 0.34f))
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    modifier = Modifier.size(42.dp),
+                    color = if (highlight || state is UpdateState.Downloading) activeGreen.copy(alpha = 0.32f)
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(13.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(22.dp))
+                    }
+                }
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }

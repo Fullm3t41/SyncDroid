@@ -10,6 +10,7 @@ import com.syncdroid.app.storage.StorageSyncWarning
 import com.syncdroid.shared.sync.MeshRouteCandidate
 import com.syncdroid.shared.sync.initialMeshFanoutTargets
 import com.syncdroid.shared.sync.propagationFanoutTargets
+import com.syncdroid.shared.update.MeshUpdateCache
 import java.io.Closeable
 import java.time.ZonedDateTime
 import java.util.concurrent.ConcurrentHashMap
@@ -69,6 +70,7 @@ class MeshRuntime(
     private val rendezvousWindowSeconds: Long = 30,
     private val discoverImmediately: Boolean = false,
     private val appInForeground: StateFlow<Boolean>,
+    private val updateCache: MeshUpdateCache? = null,
     private val onEvent: (MeshRuntimeEvent) -> Unit = {},
 ) : Closeable {
     private val appContext = context.applicationContext
@@ -245,6 +247,7 @@ class MeshRuntime(
                 identity,
                 groupId,
                 groupName,
+                updateCache,
                 rateSampler::record,
             ).run(connection)
             lastSessionAtMillis[connection.peer.deviceId] = System.currentTimeMillis()

@@ -33,9 +33,12 @@ import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.WholeFilePeerClient
 import com.syncdroid.shared.protocol.FileTransferMessage
 import com.syncdroid.shared.protocol.MeshSessionMessage
+import com.syncdroid.shared.update.MeshUpdateCache
+import com.syncdroid.shared.update.MeshUpdateExchange
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 
 class MeshSyncSession(
@@ -44,6 +47,7 @@ class MeshSyncSession(
     private val identity: AndroidDeviceIdentity,
     private val groupId: String,
     private val groupName: String,
+    private val updateCache: MeshUpdateCache? = null,
     private val onBytesTransferred: (Long) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -100,6 +104,16 @@ class MeshSyncSession(
             result
         }
         database.meshDao().updateLastSeen(groupId, remoteDeviceId, System.currentTimeMillis())
+        updateCache?.let { cache ->
+            runCatching {
+                MeshUpdateExchange(cache).run(
+                    localDeviceId = identity.deviceId,
+                    remoteDeviceId = remoteDeviceId,
+                    send = { connection.send(MeshSessionCodec.encode(it)) },
+                    receive = { MeshSessionCodec.decode(connection.receive()) },
+                )
+            }.onFailure { if (it is CancellationException) throw it }
+        }
         return MeshSyncResult(
             newChatMessages = receiveResult.newChatMessages,
             storageWarning = mergeStorageWarnings(downloadResult.warnings),

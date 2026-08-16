@@ -4,9 +4,25 @@ import java.awt.Desktop
 import java.nio.file.Files
 import java.nio.file.Path
 import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
 
 object WindowsFolderPicker {
     fun chooseExisting(title: String): Path? = chooseDirectory(title)
+
+    fun chooseOfflineUpdateBundle(): Path? {
+        val chooser = JFileChooser().apply {
+            dialogTitle = "Import offline update bundle"
+            fileSelectionMode = JFileChooser.FILES_ONLY
+            isAcceptAllFileFilterUsed = false
+            fileFilter = FileNameExtensionFilter("SyncDroid offline update (*.sdu)", "sdu")
+            currentDirectory = Path.of(System.getProperty("user.home")).toFile()
+        }
+        return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+            chooser.selectedFile.toPath().toAbsolutePath().normalize()
+        } else {
+            null
+        }
+    }
 
     fun openInExplorer(path: Path) {
         val folder = path.toAbsolutePath().normalize()

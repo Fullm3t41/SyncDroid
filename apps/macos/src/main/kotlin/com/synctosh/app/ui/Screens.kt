@@ -1,5 +1,7 @@
 package com.synctosh.app.ui
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SettingsBrightness
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -62,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -82,6 +86,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import com.synctosh.app.mesh.upcomingDiscoveryWindows
 import kotlinx.coroutines.delay
+import com.syncdroid.shared.update.UpdateState
 
 @Composable
 fun SyncScreen(
@@ -622,12 +627,18 @@ fun ChatScreen(
 
 @Composable
 fun SettingsScreen(
+    updateState: UpdateState,
+    onUpdateAction: () -> Unit,
+    onImportUpdateBundle: () -> Unit,
+    offlineUpdateImportUnlocked: Boolean,
+    onOfflineUpdateImportUnlocked: () -> Unit,
     themeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     onOpenPowerSettings: () -> Unit,
     onOpenFileHistory: () -> Unit,
     onFeatureRequested: (String) -> Unit,
 ) {
+    var aboutTapCount by remember { mutableIntStateOf(0) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
         LazyColumn(
@@ -691,21 +702,39 @@ fun SettingsScreen(
                 )
                     }
                 }
-                val about: @Composable () -> Unit = {
-                    SettingsCard {
-                        SettingsActionRow(
-                            icon = Icons.Rounded.Info,
-                            title = "About SyncTosh",
-                            detail = "Local-first · version 0.1.2",
-                            onClick = { onFeatureRequested("About SyncTosh") },
-                        )
+                val aboutAndUpdates: @Composable () -> Unit = {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        SettingsCard {
+                            SettingsActionRow(
+                                icon = Icons.Rounded.Info,
+                                title = "About SyncTosh",
+                                detail = "Local-first · version ${updateState.currentVersion}",
+                                onClick = {
+                                    if (!offlineUpdateImportUnlocked) {
+                                        aboutTapCount++
+                                        if (aboutTapCount >= 10) onOfflineUpdateImportUnlocked()
+                                    }
+                                },
+                            )
+                        }
+                        UpdateCard(updateState, "SyncTosh", onUpdateAction)
+                        if (offlineUpdateImportUnlocked) {
+                            SettingsCard {
+                                SettingsActionRow(
+                                    icon = Icons.Rounded.SystemUpdateAlt,
+                                    title = "Import offline update bundle",
+                                    detail = "Verify and seed a signed .sdu release across the mesh",
+                                    onClick = onImportUpdateBundle,
+                                )
+                            }
+                        }
                     }
                 }
                 if (wide) {
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top) {
                         Column(Modifier.weight(0.85f), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             appearance()
-                            about()
+                            aboutAndUpdates()
                         }
                         Box(Modifier.weight(1.15f)) { featureSettings() }
                     }
@@ -713,8 +742,64 @@ fun SettingsScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         appearance()
                         featureSettings()
-                        about()
+                        aboutAndUpdates()
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateCard(state: UpdateState, appName: String, onClick: () -> Unit) {
+    val activeGreen = androidx.compose.ui.graphics.Color(0xFFB9EED8)
+    val highlight = state is UpdateState.Available || state is UpdateState.Ready
+    val progress = (state as? UpdateState.Downloading)?.progress ?: 0f
+    val enabled = state !is UpdateState.Checking && state !is UpdateState.Downloading
+    val title = when (state) {
+        is UpdateState.Available -> "Update available"
+        is UpdateState.Downloading -> "Downloading update"
+        is UpdateState.Ready -> "Update ready"
+        is UpdateState.Checking -> "Checking for updates"
+        is UpdateState.UpToDate -> "$appName is up to date"
+        is UpdateState.Failed -> if (state.updateStillAvailable) "Update download paused" else "Update check unavailable"
+        is UpdateState.Idle -> "Software update"
+    }
+    val detail = when (state) {
+        is UpdateState.Available -> "Version ${state.manifest.version} · Select to download"
+        is UpdateState.Downloading -> "${(state.progress * 100).toInt()}% · ${state.source.name}"
+        is UpdateState.Ready -> "Version ${state.manifest.version} · Select to open"
+        is UpdateState.Checking -> "Looking for the latest GitHub release"
+        is UpdateState.UpToDate -> "Version ${state.currentVersion} · Select to check again"
+        is UpdateState.Failed -> "${state.message} · Select to retry"
+        is UpdateState.Idle -> "Version ${state.currentVersion} · Select to check"
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = if (highlight) activeGreen.copy(alpha = 0.20f) else MaterialTheme.colorScheme.surface,
+    ) {
+        Box {
+            if (state is UpdateState.Downloading) {
+                Canvas(Modifier.fillMaxWidth(progress).height(74.dp)) {
+                    drawRect(activeGreen.copy(alpha = 0.34f))
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    modifier = Modifier.size(42.dp),
+                    color = if (highlight || state is UpdateState.Downloading) activeGreen.copy(alpha = 0.32f)
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(13.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(22.dp))
+                    }
+                }
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

@@ -16,15 +16,28 @@ android {
         applicationId = "com.syncdroid.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 8
+        versionName = "0.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        create("release") {
+            val keyStorePath = System.getenv("SYNCDROID_KEYSTORE_PATH")
+            if (!keyStorePath.isNullOrBlank()) {
+                storeFile = file(keyStorePath)
+                storePassword = System.getenv("SYNCDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SYNCDROID_KEY_ALIAS")
+                keyPassword = System.getenv("SYNCDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

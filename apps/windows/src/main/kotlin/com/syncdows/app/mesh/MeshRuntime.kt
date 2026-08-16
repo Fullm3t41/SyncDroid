@@ -4,6 +4,7 @@ import com.syncdroid.shared.protocol.PairingCompletionMessage
 import com.syncdroid.shared.sync.MeshRouteCandidate
 import com.syncdroid.shared.sync.initialMeshFanoutTargets
 import com.syncdroid.shared.sync.propagationFanoutTargets
+import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdows.app.model.MeshPeer
 import com.syncdows.app.platform.AppPreferences
 import com.syncdows.app.platform.WindowsWifi
@@ -58,6 +59,7 @@ class MeshRuntime(
     private val deviceName: () -> String,
     private val store: MeshStore = MeshStore(),
     private val identity: WindowsDeviceIdentity = WindowsDeviceIdentity(),
+    private val updateCache: MeshUpdateCache? = null,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lanDiscovery = PairingLanDiscovery(identity.deviceId)
@@ -325,7 +327,7 @@ class MeshRuntime(
                 .use { connection ->
                     val remoteId = StablePeerAuthenticator(store, identity, profile.groupId).authenticate(connection)
                     store.applyMembership(profile.groupName, removal)
-                    MeshFileSyncSession(store, identity, profile).run(connection, remoteId)
+                    MeshFileSyncSession(store, identity, profile, updateCache).run(connection, remoteId)
                 }
             stopMeshNetworking()
             store.clearMesh()
@@ -584,7 +586,7 @@ class MeshRuntime(
                 var transferred = 0L
                 val startedAt = System.nanoTime()
                 mutableState.value = mutableState.value.copy(status = "Scanning configured folders…")
-                val result = MeshFileSyncSession(store, identity, profile) { bytes ->
+                val result = MeshFileSyncSession(store, identity, profile, updateCache) { bytes ->
                     transferred += bytes
                     val seconds = ((System.nanoTime() - startedAt) / 1_000_000_000.0).coerceAtLeast(0.1)
                     mutableState.value = mutableState.value.copy(

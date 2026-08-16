@@ -1,7 +1,8 @@
 package com.syncdows.app
 
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -9,20 +10,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.syncdows.app.mesh.MeshRuntime
 import com.syncdows.app.platform.AppPreferences
 import com.syncdows.app.platform.SingleInstanceGuard
+import com.syncdows.app.platform.StyledSystemTrayIcon
 import com.syncdows.app.platform.WindowsDeviceName
-import com.syncdows.app.mesh.MeshRuntime
-import com.syncdows.app.mesh.SUPPORTED_DISCOVERY_INTERVALS
-import com.syncdows.app.mesh.SUPPORTED_DISCOVERY_WINDOWS
-import com.syncdows.app.mesh.discoveryIntervalLabel
-import com.syncdows.app.mesh.discoveryWindowLabel
+import com.syncdows.app.platform.UpdateConfig
+import com.syncdows.app.platform.WindowsAppPaths
+import com.syncdows.app.platform.WindowsUpdateInstaller
 import com.syncdows.app.ui.SyncDowsApp
+import com.syncdows.app.ui.TrayPanelWindow
+import java.awt.Point
+import com.syncdroid.shared.update.LastUpdateCheckStore
+import com.syncdroid.shared.update.ReleaseUpdateService
+import com.syncdroid.shared.update.UpdatePlatform
 
 fun main(args: Array<String>) {
     val instanceGuard = SingleInstanceGuard.acquire() ?: return
@@ -35,13 +40,29 @@ fun main(args: Array<String>) {
 
 private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Boolean) = application {
     val preferences = remember { AppPreferences() }
+    val updateService = remember {
+        ReleaseUpdateService(
+            currentVersion = UpdateConfig.CURRENT_VERSION,
+            platform = UpdatePlatform.WindowsX64,
+            cacheDirectory = WindowsAppPaths.updates,
+            lastCheck = { preferences.lastUpdateCheckMillis },
+            lastCheckStore = LastUpdateCheckStore { preferences.lastUpdateCheckMillis = it },
+        )
+    }
     val meshRuntime = remember {
-        MeshRuntime(preferences, deviceName = { preferences.deviceName ?: WindowsDeviceName.current() }).also {
+        MeshRuntime(
+            preferences,
+            deviceName = { preferences.deviceName ?: WindowsDeviceName.current() },
+            updateCache = updateService,
+        ).also {
             if (startHidden) it.setWindowForeground(false)
         }
     }
+    LaunchedEffect(updateService) { updateService.runDailyChecks() }
     val meshState by meshRuntime.state.collectAsState()
     var windowVisible by remember { mutableStateOf(!startHidden) }
+    var trayPanelVisible by remember { mutableStateOf(false) }
+    var trayPanelAnchor by remember { mutableStateOf(Point()) }
     var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
     var discoveryWindow by remember { mutableLongStateOf(preferences.discoveryWindowSeconds) }
     val windowState = rememberWindowState(
@@ -57,6 +78,7 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
     }
 
     fun showWindow() {
+        trayPanelVisible = false
         windowVisible = true
         meshRuntime.setWindowForeground(true)
     }
@@ -81,60 +103,35 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
         meshRuntime.discoveryScheduleChanged()
     }
 
-    Tray(
-        icon = appIcon,
-        tooltip = "SyncDows · ${meshState.status}",
-        onAction = ::showWindow,
-        menu = {
-            Item("Open SyncDows", onClick = ::showWindow)
-            Separator()
-            Item("Status: ${meshState.status}", enabled = false) {}
-            Separator()
-            val onlinePeers = meshState.peers.count { it.online }
-            Item("Devices · $onlinePeers/${meshState.peers.size} online", enabled = false) {}
-            if (meshState.profile == null) {
-                Item("No mesh connected", enabled = false) {}
-            } else if (meshState.peers.isEmpty()) {
-                Item("No other mesh devices", enabled = false) {}
-            } else {
-                meshState.peers
-                    .sortedWith(
-                        compareByDescending<com.syncdows.app.model.MeshPeer> { it.online }
-                            .thenBy { it.name.lowercase() },
-                    )
-                    .forEach { peer ->
-                        Item(
-                            text = if (peer.online) "🟢 ${peer.name}" else "● ${peer.name}",
-                            enabled = peer.online,
-                            onClick = ::showWindow,
-                        )
-                    }
-            }
-            Separator()
-            Menu("Sync interval · ${discoveryIntervalLabel(discoveryInterval)}") {
-                SUPPORTED_DISCOVERY_INTERVALS.forEach { minutes ->
-                    Item(
-                        text = selectionLabel(discoveryInterval == minutes, discoveryIntervalLabel(minutes)),
-                        onClick = { updateDiscoveryInterval(minutes) },
-                    )
-                }
-            }
-            Menu("Discovery duration · ${discoveryWindowLabel(discoveryWindow)}") {
-                SUPPORTED_DISCOVERY_WINDOWS.forEach { seconds ->
-                    Item(
-                        text = selectionLabel(discoveryWindow == seconds, discoveryWindowLabel(seconds)),
-                        onClick = { updateDiscoveryWindow(seconds) },
-                    )
-                }
-            }
-            Separator()
-            Item("Quit") {
-                saveWindowState()
-                meshRuntime.close()
-                exitApplication()
-            }
+    fun quitApplication() {
+        saveWindowState()
+        meshRuntime.close()
+        exitApplication()
+    }
+
+    StyledSystemTrayIcon(
+        tooltip = "SyncDows \u00B7 ${meshState.status}",
+        onMenuRequested = { anchor ->
+            trayPanelAnchor = anchor
+            trayPanelVisible = !trayPanelVisible
         },
+        onOpenRequested = ::showWindow,
     )
+
+    if (trayPanelVisible) {
+        TrayPanelWindow(
+            anchor = trayPanelAnchor,
+            themeMode = preferences.themeMode,
+            meshState = meshState,
+            discoveryInterval = discoveryInterval,
+            discoveryWindow = discoveryWindow,
+            onOpen = ::showWindow,
+            onDiscoveryIntervalChanged = ::updateDiscoveryInterval,
+            onDiscoveryWindowChanged = ::updateDiscoveryWindow,
+            onDismiss = { trayPanelVisible = false },
+            onQuit = ::quitApplication,
+        )
+    }
 
     if (windowVisible) {
         Window(
@@ -151,10 +148,12 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
                 onDiscoveryIntervalChanged = ::updateDiscoveryInterval,
                 onDiscoveryWindowChanged = ::updateDiscoveryWindow,
                 onCloseToNotificationBar = ::closeToNotificationBar,
+                updateService = updateService,
+                onInstallUpdate = { installer ->
+                    WindowsUpdateInstaller.launch(installer)
+                    quitApplication()
+                },
             )
         }
     }
 }
-
-private fun selectionLabel(selected: Boolean, label: String): String =
-    if (selected) "✓ $label" else "   $label"

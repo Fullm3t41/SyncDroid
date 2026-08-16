@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +44,9 @@ import com.syncdows.app.platform.WindowsDeviceName
 import com.syncdows.app.platform.WindowsFolderPicker
 import com.syncdows.app.platform.WindowsStartupManager
 import java.nio.file.Path
+import com.syncdroid.shared.update.ReleaseUpdateService
+import com.syncdroid.shared.update.UpdateState
+import kotlinx.coroutines.launch
 
 private enum class SecondaryScreen { PowerDiscovery, FileHistory, Conflicts, SyncExceptions }
 
@@ -55,12 +59,17 @@ fun SyncDowsApp(
     onDiscoveryIntervalChanged: (Int) -> Unit,
     onDiscoveryWindowChanged: (Long) -> Unit,
     onCloseToNotificationBar: () -> Unit,
+    updateService: ReleaseUpdateService,
+    onInstallUpdate: (Path) -> Unit,
 ) {
     val meshState by runtime.state.collectAsState()
+    val updateState by updateService.state.collectAsState()
+    val scope = rememberCoroutineScope()
     var selectedSection by remember { mutableStateOf(preferences.selectedSection) }
     var themeMode by remember { mutableStateOf(preferences.themeMode) }
     var deviceName by remember { mutableStateOf(preferences.deviceName ?: WindowsDeviceName.current()) }
     var launchAtLogin by remember { mutableStateOf(preferences.launchAtLogin) }
+    var offlineUpdateImportUnlocked by remember { mutableStateOf(preferences.offlineUpdateImportUnlocked) }
     var secondaryScreen by remember { mutableStateOf<SecondaryScreen?>(null) }
     var featureNotice by remember { mutableStateOf<String?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -233,6 +242,29 @@ fun SyncDowsApp(
                                 onSend = runtime::sendChat,
                             )
                             MainSection.Settings -> SettingsScreen(
+                                updateState = updateState,
+                                onUpdateAction = {
+                                    when (val current = updateState) {
+                                        is UpdateState.Available -> scope.launch { updateService.downloadUpdate() }
+                                        is UpdateState.Ready -> onInstallUpdate(current.installer)
+                                        is UpdateState.Failed -> scope.launch {
+                                            if (current.updateStillAvailable) updateService.downloadUpdate()
+                                            else updateService.checkForUpdate()
+                                        }
+                                        is UpdateState.Idle, is UpdateState.UpToDate -> scope.launch { updateService.checkForUpdate() }
+                                        is UpdateState.Checking, is UpdateState.Downloading -> Unit
+                                    }
+                                },
+                                onImportUpdateBundle = {
+                                    WindowsFolderPicker.chooseOfflineUpdateBundle()?.let { bundle ->
+                                        scope.launch { runCatching { updateService.importOfflineBundle(bundle) } }
+                                    }
+                                },
+                                offlineUpdateImportUnlocked = offlineUpdateImportUnlocked,
+                                onOfflineUpdateImportUnlocked = {
+                                    offlineUpdateImportUnlocked = true
+                                    preferences.offlineUpdateImportUnlocked = true
+                                },
                                 themeMode = themeMode,
                                 onThemeModeChanged = {
                                     themeMode = it

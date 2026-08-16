@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.syncdows"
-version = "0.1.0"
+version = "0.2.1"
 
 kotlin {
     jvmToolchain(17)
@@ -44,7 +44,7 @@ compose.desktop {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = "SyncDows"
             // jpackage requires a non-zero first component even while the product is pre-1.0.
-            packageVersion = "1.0.0"
+            packageVersion = "1.2.1"
             description = "Local-first peer-to-peer folder synchronization for the SyncDroid mesh"
             vendor = "Fullm3t41"
 

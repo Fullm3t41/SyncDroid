@@ -45,6 +45,14 @@ class AppPreferences {
         get() = preferences.getBoolean(KEY_LAUNCH_AT_LOGIN, false)
         set(value) = preferences.putBoolean(KEY_LAUNCH_AT_LOGIN, value)
 
+    var lastUpdateCheckMillis: Long
+        get() = preferences.getLong(KEY_LAST_UPDATE_CHECK, 0L)
+        set(value) = preferences.putLong(KEY_LAST_UPDATE_CHECK, value)
+
+    var offlineUpdateImportUnlocked: Boolean
+        get() = preferences.getBoolean(KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED, false)
+        set(value) = preferences.putBoolean(KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED, value)
+
     var registeredWifiNames: Set<String>
         get() = preferences.get(KEY_REGISTERED_WIFI, "")
             .lineSequence()
@@ -95,6 +103,8 @@ class AppPreferences {
         const val KEY_DISCOVERY_WINDOW = "discovery_window_seconds"
         const val KEY_DEVICE_NAME = "device_name"
         const val KEY_LAUNCH_AT_LOGIN = "launch_at_login"
+        const val KEY_LAST_UPDATE_CHECK = "last_update_check_millis"
+        const val KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED = "offline_update_import_unlocked"
         const val KEY_REGISTERED_WIFI = "registered_wifi_names"
         const val KEY_PAIRING_FAILURES = "pairing_failed_attempts"
         const val KEY_PAIRING_RESET_AT = "pairing_reset_at"

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension">
+  <Bundle
+      Name="SyncDows"
+      Version="$(var.BundleVersion)"
+      Manufacturer="Fullm3t41"
+      UpgradeCode="43d9dc72-284c-4270-bc4b-f6c6dda16ed1"
+      IconSourceFile="$(var.IconPath)">
+
+    <Variable
+        Name="InstallFolder"
+        Type="string"
+        Value="[LocalAppDataFolder]Programs\SyncDows"
+        Persisted="yes"
+        bal:Overridable="yes" />
+
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+      <bal:WixStandardBootstrapperApplication
+          LicenseUrl=""
+          ThemeFile="$(var.ThemePath)"
+          LocalizationFile="$(var.LocalizationPath)"
+          LogoFile="$(var.LogoPath)"
+          LaunchTarget="[InstallFolder]\SyncDows.exe"
+          SuppressRepair="no"
+          SuppressOptionsUI="no" />
+    </BootstrapperApplicationRef>
+
+    <Chain>
+      <ExePackage
+          Id="PreserveSyncDowsUserData"
+          SourceFile="$(var.MigrationHelperPath)"
+          Compressed="yes"
+          Cache="no"
+          PerMachine="no"
+          Permanent="yes"
+          Vital="yes"
+          InstallCommand="--install-path &quot;[InstallFolder]&quot;" />
+      <MsiPackage
+          Id="SyncDowsMsi"
+          SourceFile="$(var.MsiPath)"
+          Compressed="yes"
+          DisplayInternalUI="no"
+          Vital="yes">
+        <MsiProperty Name="INSTALLDIR" Value="[InstallFolder]" />
+      </MsiPackage>
+      <MsiPackage
+          Id="SyncDowsUninstallerMsi"
+          SourceFile="$(var.UninstallerMsiPath)"
+          Compressed="yes"
+          DisplayInternalUI="no"
+          Vital="yes">
+        <MsiProperty Name="INSTALLDIR" Value="[InstallFolder]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

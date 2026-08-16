@@ -16,7 +16,7 @@ SyncDows is the Windows peer in the SyncDroid local-Wi-Fi mesh. It uses the same
 - Mesh-wide device renaming/removal and a signed Leave mesh flow.
 - Multiple registered Wi-Fi networks for background-only power restrictions.
 - Close-to-tray operation with discovery interval and duration controls.
-- Self-contained EXE and MSI configuration for native Windows builds.
+- Self-contained branded EXE configuration for native Windows builds.
 
 ## Development verification
 
@@ -26,7 +26,7 @@ The JVM sources and shared compatibility fixtures can be compiled and tested on 
 .\gradlew.bat test
 ```
 
-On macOS/Linux use `./gradlew test`. Native EXE/MSI packaging must run on Windows:
+On macOS/Linux use `./gradlew test`. Native EXE packaging must run on Windows:
 
 ```powershell
 .\gradlew.bat packageExe packageMsi
@@ -38,6 +38,6 @@ For a clean test and both versioned installers, run:
 .\build-windows.ps1
 ```
 
-The results are written to `build\release\SyncDows-0.1.0.exe` and `SyncDows-0.1.0.msi`. The repository also contains a Windows GitHub Actions workflow that runs the same compatibility tests and publishes both installers as a build artifact.
+The result is written to `build\release\SyncDows-0.2.1-Windows-x64.exe`. The EXE is a branded, dark WiX bootstrapper around the internal MSI. Before installation begins it validates the chosen path and preserves legacy mesh state. Application files default to `%LOCALAPPDATA%\Programs\SyncDows`; persistent identity and mesh data live separately under `%LOCALAPPDATA%\Fullm3t41\SyncDows`. The installed application folder includes `Uninstall SyncDows.exe`, and normal Windows repair, upgrade and Installed Apps removal remain available. The repository also contains Windows and cross-platform release workflows that run compatibility tests and publish update-compatible installers.
 
 The installer bundles its Java runtime; end users do not need to install Java. Physical Windows testing remains required for Windows Firewall prompts, LAN interface selection, tray lifecycle, sleep/wake behavior and installer upgrades.

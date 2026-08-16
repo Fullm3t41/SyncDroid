@@ -30,6 +30,7 @@ import com.syncdroid.app.wifi.WifiConnectionMonitor
 import com.syncdroid.app.wifi.WifiConnectionState
 import com.syncdroid.app.wifi.WifiSyncPolicyStore
 import com.syncdroid.app.wifi.hasWifiRuntimePermission
+import com.syncdroid.app.update.AndroidUpdateProvider
 import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -250,6 +251,7 @@ class SyncForegroundService : Service() {
             rendezvousWindowSeconds = policy.windowSeconds,
             discoverImmediately = discoverImmediately,
             appInForeground = SyncServiceController.appInForeground,
+            updateCache = AndroidUpdateProvider.get(this),
             onEvent = { event -> serviceScope.launch { handleRuntimeEvent(event) } },
         )
         runtime = newRuntime

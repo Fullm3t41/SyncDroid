@@ -41,12 +41,28 @@ data class FolderIndexUpdate(
     val files: List<IndexedFileRecord>,
 )
 
+data class UpdateAssetDescriptor(
+    val releaseVersion: String,
+    val platformId: String,
+    val fileName: String,
+    val sha256: String,
+    val sizeBytes: Long,
+)
+
 sealed interface MeshSessionMessage {
     data class Metadata(val bundle: ByteArray) : MeshSessionMessage
     data class Catalog(val folders: List<FolderClock>) : MeshSessionMessage
     data class IndexBatch(val updates: List<FolderIndexUpdate>) : MeshSessionMessage
     data class TransferPlan(val requestCount: Int) : MeshSessionMessage
     data object PhaseDone : MeshSessionMessage
+    data class UpdateInventory(val assets: List<UpdateAssetDescriptor>) : MeshSessionMessage
+    data class UpdateRequest(val sha256: String, val offset: Long, val maxBytes: Int) : MeshSessionMessage
+    data class UpdateChunk(val asset: UpdateAssetDescriptor, val offset: Long, val bytes: ByteArray) : MeshSessionMessage {
+        override fun equals(other: Any?): Boolean = other is UpdateChunk &&
+            asset == other.asset && offset == other.offset && bytes.contentEquals(other.bytes)
+        override fun hashCode(): Int = 31 * (31 * asset.hashCode() + offset.hashCode()) + bytes.contentHashCode()
+    }
+    data object UpdatePhaseDone : MeshSessionMessage
     data class Error(val reason: String) : MeshSessionMessage
 }
 
@@ -84,6 +100,29 @@ object MeshSessionWireCodec {
                     output.writeInt(message.requestCount)
                 }
                 MeshSessionMessage.PhaseDone -> output.writeByte(PHASE_DONE)
+                is MeshSessionMessage.UpdateInventory -> {
+                    output.writeByte(UPDATE_INVENTORY)
+                    output.writeCount(message.assets.size)
+                    message.assets.forEach { output.writeUpdateAsset(it) }
+                }
+                is MeshSessionMessage.UpdateRequest -> {
+                    require(message.sha256.matches(SHA256_PATTERN))
+                    require(message.offset >= 0L)
+                    require(message.maxBytes in 1..MAX_UPDATE_CHUNK_BYTES)
+                    output.writeByte(UPDATE_REQUEST)
+                    output.writeString(message.sha256)
+                    output.writeLong(message.offset)
+                    output.writeInt(message.maxBytes)
+                }
+                is MeshSessionMessage.UpdateChunk -> {
+                    require(message.offset >= 0L)
+                    require(message.bytes.size in 1..MAX_UPDATE_CHUNK_BYTES)
+                    output.writeByte(UPDATE_CHUNK)
+                    output.writeUpdateAsset(message.asset)
+                    output.writeLong(message.offset)
+                    output.writeData(message.bytes)
+                }
+                MeshSessionMessage.UpdatePhaseDone -> output.writeByte(UPDATE_PHASE_DONE)
                 is MeshSessionMessage.Error -> {
                     output.writeByte(ERROR)
                     output.writeString(message.reason)
@@ -107,6 +146,18 @@ object MeshSessionWireCodec {
             INDEX_BATCH -> MeshSessionMessage.IndexBatch(List(input.readCount()) { input.readUpdate() })
             TRANSFER_PLAN -> MeshSessionMessage.TransferPlan(input.readInt().also { require(it in 0..MAX_REQUESTS) })
             PHASE_DONE -> MeshSessionMessage.PhaseDone
+            UPDATE_INVENTORY -> MeshSessionMessage.UpdateInventory(List(input.readCount()) { input.readUpdateAsset() })
+            UPDATE_REQUEST -> MeshSessionMessage.UpdateRequest(
+                sha256 = input.readString().also { require(it.matches(SHA256_PATTERN)) },
+                offset = input.readLong().also { require(it >= 0L) },
+                maxBytes = input.readInt().also { require(it in 1..MAX_UPDATE_CHUNK_BYTES) },
+            )
+            UPDATE_CHUNK -> MeshSessionMessage.UpdateChunk(
+                asset = input.readUpdateAsset(),
+                offset = input.readLong().also { require(it >= 0L) },
+                bytes = input.readData().also { require(it.size in 1..MAX_UPDATE_CHUNK_BYTES) },
+            )
+            UPDATE_PHASE_DONE -> MeshSessionMessage.UpdatePhaseDone
             ERROR -> MeshSessionMessage.Error(input.readString())
             else -> error("Unknown mesh session message $type")
         }
@@ -168,6 +219,24 @@ object MeshSessionWireCodec {
         return FolderIndexUpdate(folderId, epoch, previous, last, full, files)
     }
 
+    private fun DataOutputStream.writeUpdateAsset(asset: UpdateAssetDescriptor) {
+        require(asset.sha256.matches(SHA256_PATTERN))
+        require(asset.sizeBytes > 0L)
+        writeString(asset.releaseVersion)
+        writeString(asset.platformId)
+        writeString(asset.fileName)
+        writeString(asset.sha256)
+        writeLong(asset.sizeBytes)
+    }
+
+    private fun DataInputStream.readUpdateAsset() = UpdateAssetDescriptor(
+        releaseVersion = readString(),
+        platformId = readString(),
+        fileName = readString(),
+        sha256 = readString().also { require(it.matches(SHA256_PATTERN)) },
+        sizeBytes = readLong().also { require(it > 0L) },
+    )
+
     private fun DataOutputStream.writeString(value: String) = writeData(value.toByteArray(StandardCharsets.UTF_8))
     private fun DataInputStream.readString() = String(readData(), StandardCharsets.UTF_8)
     private fun DataOutputStream.writeNullableString(value: String?) {
@@ -196,8 +265,14 @@ object MeshSessionWireCodec {
     private const val INDEX_BATCH = 3
     private const val TRANSFER_PLAN = 4
     private const val PHASE_DONE = 5
+    private const val UPDATE_INVENTORY = 6
+    private const val UPDATE_REQUEST = 7
+    private const val UPDATE_CHUNK = 8
+    private const val UPDATE_PHASE_DONE = 9
     private const val ERROR = 127
     private const val MAX_ITEMS = 50_000
     private const val MAX_REQUESTS = 1_000_000
     private const val MAX_FIELD_BYTES = 16 * 1024 * 1024
+    private const val MAX_UPDATE_CHUNK_BYTES = 1024 * 1024
+    private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
 }

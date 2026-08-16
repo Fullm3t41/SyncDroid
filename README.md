@@ -69,7 +69,7 @@ The six-digit code is designed for convenient nearby pairing, not for publishing
 | **SyncDows** | Windows 10/11 | Native testing in progress |
 | **SyncDeck** | Linux/SteamOS | Planned |
 
-Release downloads are self-contained: the Android release is provided as an APK and SyncTosh as a macOS DMG. Windows installers will be added to a public release after physical interoperability and installer testing is complete.
+Release downloads are self-contained: SyncDroid is provided as an Android APK, SyncTosh as an Apple Silicon DMG, and SyncDows as a branded Windows EXE. From version 0.2.0 onward, every app checks the signed GitHub release manifest at startup and daily, and can reuse a verified installer cached by a trusted mesh peer. See [Releasing](docs/releasing.md) before publishing a version.
 
 ## Current scope
 

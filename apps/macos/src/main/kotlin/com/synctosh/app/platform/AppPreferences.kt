@@ -40,6 +40,14 @@ class AppPreferences {
             else preferences.put(KEY_DEVICE_NAME, value.trim())
         }
 
+    var lastUpdateCheckMillis: Long
+        get() = preferences.getLong(KEY_LAST_UPDATE_CHECK, 0L)
+        set(value) = preferences.putLong(KEY_LAST_UPDATE_CHECK, value)
+
+    var offlineUpdateImportUnlocked: Boolean
+        get() = preferences.getBoolean(KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED, false)
+        set(value) = preferences.putBoolean(KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED, value)
+
     fun pairingAttemptState(nowMillis: Long = System.currentTimeMillis()): PairingAttemptState = PairingAttemptState(
         failedAttempts = preferences.getInt(KEY_PAIRING_FAILURES, 0),
         resetAtMillis = preferences.getLong(KEY_PAIRING_RESET_AT, 0),
@@ -72,6 +80,8 @@ class AppPreferences {
         const val KEY_DISCOVERY_INTERVAL = "discovery_interval_minutes"
         const val KEY_DISCOVERY_WINDOW = "discovery_window_seconds"
         const val KEY_DEVICE_NAME = "device_name"
+        const val KEY_LAST_UPDATE_CHECK = "last_update_check_millis"
+        const val KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED = "offline_update_import_unlocked"
         const val KEY_PAIRING_FAILURES = "pairing_failed_attempts"
         const val KEY_PAIRING_RESET_AT = "pairing_reset_at"
     }

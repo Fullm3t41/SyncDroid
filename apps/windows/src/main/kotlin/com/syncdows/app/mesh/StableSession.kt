@@ -5,8 +5,11 @@ import com.syncdows.app.platform.WindowsAppPaths
 import com.syncdroid.shared.protocol.FileTransferMessage
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.verifyEcdsaSha256
+import com.syncdroid.shared.update.MeshUpdateCache
+import com.syncdroid.shared.update.MeshUpdateExchange
 import java.security.SecureRandom
 import java.util.Base64
+import kotlinx.coroutines.CancellationException
 
 fun StablePeerProof.isValid(): Boolean = runCatching {
     val key = decodePublicKey(publicKeyBase64)
@@ -69,6 +72,7 @@ class MeshFileSyncSession(
     private val store: MeshStore,
     private val identity: WindowsDeviceIdentity,
     private val profile: MeshProfile,
+    private val updateCache: MeshUpdateCache? = null,
     private val onBytesTransferred: (Long) -> Unit = {},
 ) {
     private val history = FileHistoryRepository(store, identity.deviceId)
@@ -119,6 +123,16 @@ class MeshFileSyncSession(
             count
         }
         store.markSeen(profile.groupId, remoteDeviceId)
+        updateCache?.let { cache ->
+            runCatching {
+                MeshUpdateExchange(cache).run(
+                    localDeviceId = identity.deviceId,
+                    remoteDeviceId = remoteDeviceId,
+                    send = { connection.send(MeshSessionCodec.encode(it)) },
+                    receive = { MeshSessionCodec.decode(connection.receive()) },
+                )
+            }.onFailure { if (it is CancellationException) throw it }
+        }
         return MeshFileSyncResult(appliedChangeCount, metadataChanged)
     }
 

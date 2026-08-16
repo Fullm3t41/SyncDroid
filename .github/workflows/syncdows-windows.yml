@@ -38,24 +38,13 @@ jobs:
         shell: pwsh
         run: choco install wixtoolset --no-progress -y
 
-      - name: Test shared compatibility and SyncDows
+      - name: Test and build branded EXE
         shell: pwsh
-        run: .\gradlew.bat --no-daemon test
-
-      - name: Build EXE and MSI
-        shell: pwsh
-        run: .\gradlew.bat --no-daemon packageExe packageMsi
-
-      - name: Collect versioned installers
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path build\release | Out-Null
-          Copy-Item build\compose\binaries\main\exe\*.exe build\release\SyncDows-0.1.0.exe
-          Copy-Item build\compose\binaries\main\msi\*.msi build\release\SyncDows-0.1.0.msi
+        run: .\build-windows.ps1
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v7
         with:
-          name: SyncDows-0.1.0-Windows
-          path: apps/windows/build/release/*
+          name: SyncDows-Windows
+          path: apps/windows/build/release/*.exe
           if-no-files-found: error
