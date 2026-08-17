@@ -29,8 +29,16 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 const val DEFAULT_RELEASE_MANIFEST_URL =
-    "https://raw.githubusercontent.com/Fullm3t41/SyncDroid-Mesh/updates/syncdroid-update.properties"
+    "https://api.github.com/repos/Fullm3t41/SyncDroid-Mesh/contents/syncdroid-update.properties?ref=updates"
 const val UPDATE_CHECK_INTERVAL_MILLIS = 24L * 60L * 60L * 1_000L
+
+internal fun releaseSignatureUrl(manifestUrl: String): String {
+    val suffixIndex = sequenceOf(manifestUrl.indexOf('?'), manifestUrl.indexOf('#'))
+        .filter { it >= 0 }
+        .minOrNull()
+        ?: manifestUrl.length
+    return manifestUrl.substring(0, suffixIndex) + ".sig" + manifestUrl.substring(suffixIndex)
+}
 
 fun interface LastUpdateCheckStore {
     fun save(timeMillis: Long)
@@ -126,7 +134,7 @@ class ReleaseUpdateService(
         runCatching {
             val candidate = withContext(Dispatchers.IO) {
                 val manifestText = httpGetText(manifestUrl)
-                val signatureText = httpGetText("$manifestUrl.sig")
+                val signatureText = httpGetText(releaseSignatureUrl(manifestUrl))
                 SignedReleaseManifest.verify(manifestText, signatureText, trustedPublicKeyBase64)
             }
             acceptSignedManifest(candidate)
@@ -390,7 +398,7 @@ class ReleaseUpdateService(
             offset = 0L
             connection = openConnection(asset.downloadUrl).also { it.connect() }
         }
-        require(connection.responseCode in 200..299) { "GitHub returned HTTP ${connection.responseCode}" }
+        require(connection.responseCode in 200..299) { githubHttpError(connection.responseCode) }
         BufferedInputStream(connection.inputStream).use { source ->
             BufferedOutputStream(Files.newOutputStream(
                 partial,
@@ -556,17 +564,34 @@ class ReleaseUpdateService(
 
     private fun httpGetText(url: String): String {
         val connection = openConnection(url)
-        connection.connect()
-        require(connection.responseCode in 200..299) { "GitHub returned HTTP ${connection.responseCode}" }
-        return connection.inputStream.bufferedReader().use { it.readText() }.also { connection.disconnect() }
+        return try {
+            connection.connect()
+            require(connection.responseCode in 200..299) { githubHttpError(connection.responseCode) }
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
     }
 
-    private fun openConnection(url: String): HttpURLConnection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
-        instanceFollowRedirects = true
-        connectTimeout = 15_000
-        readTimeout = 30_000
-        setRequestProperty("Accept", "application/octet-stream")
-        setRequestProperty("User-Agent", "SyncDroid-Mesh-Updater/$currentVersion")
+    private fun openConnection(url: String): HttpURLConnection {
+        val uri = URI(url)
+        return (uri.toURL().openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = true
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            if (uri.host.equals("api.github.com", ignoreCase = true) && "/contents/" in uri.path) {
+                setRequestProperty("Accept", "application/vnd.github.raw+json")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+            } else {
+                setRequestProperty("Accept", "application/octet-stream")
+            }
+            setRequestProperty("User-Agent", "SyncDroid-Mesh-Updater/$currentVersion")
+        }
+    }
+
+    private fun githubHttpError(responseCode: Int): String = when (responseCode) {
+        429 -> "GitHub temporarily rate-limited update checks (HTTP 429). Try again shortly."
+        else -> "GitHub returned HTTP $responseCode"
     }
 
     private fun sha256(path: Path): String {
