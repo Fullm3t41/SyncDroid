@@ -10,6 +10,7 @@ import com.syncdroid.app.storage.StorageSyncWarning
 import com.syncdroid.shared.sync.MeshRouteCandidate
 import com.syncdroid.shared.sync.initialMeshFanoutTargets
 import com.syncdroid.shared.sync.propagationFanoutTargets
+import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.discovery.MeshLanDiscovery
 import com.syncdroid.shared.update.MeshUpdateCache
 import java.io.Closeable
@@ -152,7 +153,7 @@ class MeshRuntime(
                     )
                 }
                 mergeDiscoveredPeers(fallbackPeers, nsdPeers)
-            }.collectLatest { peers ->
+            }.collect { peers ->
                 latestPeers = peers
                 peers.forEach { (deviceId, peer) -> peerEndpoints[deviceId] = peer }
                 peers.values.filter { it.serviceName == "LAN fallback" && loggedLanPeerIds.add(it.deviceId) }
@@ -196,7 +197,7 @@ class MeshRuntime(
                             active = deviceId in activePeers || peerJobs[deviceId]?.isActive == true,
                         )
                     },
-                    maxFanout = ROUTING_FANOUT,
+                    maxFanout = signal.maxFanout,
                 )
                 targets.forEach { deviceId ->
                     available[deviceId]?.let { launchPeerConnection(client, it, retry = false) }
@@ -228,6 +229,12 @@ class MeshRuntime(
         propagationSignals.trySend(PropagationSignal(sourcePeerId))
     }
 
+    fun propagateLocalChatChange(): Boolean = synchronized(sessionStateLock) {
+        acceptingDiscoveredSessions
+    }.also { active ->
+        if (active) propagationSignals.trySend(PropagationSignal(identity.deviceId, Int.MAX_VALUE))
+    }
+
     private fun launchPeerConnection(
         client: MeshPeerClient,
         peer: DiscoveredMeshPeer,
@@ -236,6 +243,7 @@ class MeshRuntime(
         if (peer.deviceId in activePeers || peerJobs[peer.deviceId]?.isActive == true) return
         peerJobs[peer.deviceId] = scope.launch {
             do {
+                if (peer.deviceId in activePeers) break
                 val endpoint = peerEndpoints[peer.deviceId] ?: peer
                 val attempt = runCatching {
                     client.connect(endpoint.address, endpoint.port).use { connection ->
@@ -247,11 +255,21 @@ class MeshRuntime(
                     }
                 }
                 attempt.exceptionOrNull()?.let { error ->
-                    Log.w(TAG, "Could not connect to ${peer.deviceId.take(8)} at ${endpoint.address.hostAddress}:${endpoint.port}", error)
+                    if (error is PeerSessionBusyException) {
+                        Log.d(TAG, "Peer ${peer.deviceId.take(8)} already has a session; retrying after collision backoff")
+                    } else {
+                        Log.w(TAG, "Could not connect to ${peer.deviceId.take(8)} at ${endpoint.address.hostAddress}:${endpoint.port}", error)
+                    }
                 }
                 val connected = attempt.isSuccess
                 if (connected || !retry) break
-                delay(CONNECTION_RETRY_MILLIS)
+                val retryDelay = if (attempt.exceptionOrNull() is PeerSessionBusyException) {
+                    if (identity.deviceId < peer.deviceId) LOWER_ID_COLLISION_RETRY_MILLIS
+                    else HIGHER_ID_COLLISION_RETRY_MILLIS
+                } else {
+                    CONNECTION_RETRY_MILLIS
+                }
+                delay(retryDelay)
             } while (isActive)
         }
     }
@@ -276,7 +294,12 @@ class MeshRuntime(
         val admitted = synchronized(sessionStateLock) {
             acceptingDiscoveredSessions && activePeers.add(connection.peer.deviceId)
         }
-        if (!admitted) return
+        if (!admitted) {
+            runCatching {
+                connection.send(MeshSessionCodec.encode(MeshSessionMessage.Error(SESSION_BUSY_REASON)))
+            }
+            return
+        }
         val peerName = database.meshDao().getDevice(groupId, connection.peer.deviceId)?.displayName
             ?: connection.peer.deviceId.take(8)
         try {
@@ -324,6 +347,9 @@ class MeshRuntime(
                 syncedFolders,
                 result.storageWarning,
             ))
+        } catch (error: PeerSessionBusyException) {
+            Log.d(TAG, "Concurrent session with $peerName was superseded")
+            throw error
         } catch (error: Throwable) {
             Log.e(TAG, "Mesh sync with $peerName failed", error)
             onEvent(MeshRuntimeEvent.SyncFailed(
@@ -353,6 +379,8 @@ class MeshRuntime(
     private companion object {
         const val ACTIVE_SYNC_DRAIN_POLL_MILLIS = 100L
         const val CONNECTION_RETRY_MILLIS = 5_000L
+        const val LOWER_ID_COLLISION_RETRY_MILLIS = 150L
+        const val HIGHER_ID_COLLISION_RETRY_MILLIS = 750L
         const val PROPAGATION_COALESCE_MILLIS = 300L
         const val ROUTING_SETTLE_MILLIS = 750L
         const val ROUTING_FANOUT = 2
@@ -360,7 +388,10 @@ class MeshRuntime(
     }
 }
 
-private data class PropagationSignal(val sourcePeerId: String)
+private data class PropagationSignal(
+    val sourcePeerId: String,
+    val maxFanout: Int = 2,
+)
 
 private fun mergeDiscoveredPeers(
     fallback: Map<String, DiscoveredMeshPeer>,

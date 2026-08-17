@@ -78,6 +78,7 @@ class MeshFileSyncSession(
     private val onBytesTransferred: (Long) -> Unit = {},
 ) {
     private val history = FileHistoryRepository(store, identity.deviceId)
+    private val chatAttachments = ChatAttachmentStore(store)
 
     suspend fun run(connection: AuthenticatedPeerConnection, remoteDeviceId: String): MeshFileSyncResult {
         history.cleanupExpired()
@@ -85,6 +86,9 @@ class MeshFileSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(MeshWireCodec.encode(store.exportBundle()))))
         val remoteMetadata = connection.receiveSession<MeshSessionMessage.Metadata>()
         store.importBundle(MeshWireCodec.decode(remoteMetadata.bundle))
+        val chatMessages = store.chatMessages(profile.groupId)
+        chatAttachments.cleanupExpired(chatMessages)
+        val missingAttachments = chatAttachments.missing(chatMessages)
         val metadataChanged = store.exportBundle().replicatedItemCount() > metadataCountBefore
 
         val engine = FileSyncEngine(store, identity, profile)
@@ -116,12 +120,12 @@ class MeshFileSyncSession(
             }
             PreparedDownload(plan, manifest, requestCount)
         }
-        val localRequests = prepared.sumOf(PreparedDownload::requestCount)
+        val localRequests = prepared.sumOf(PreparedDownload::requestCount) + missingAttachments.size
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequests)))
         val remoteRequests = connection.receiveSession<MeshSessionMessage.TransferPlan>().requestCount
 
         val appliedChangeCount = if (identity.deviceId < remoteDeviceId) {
-            val count = downloadPhase(connection, remoteDeviceId, prepared, engine)
+            val count = downloadPhase(connection, remoteDeviceId, prepared, missingAttachments, engine)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             serveRequests(connection, remoteRequests, engine)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
@@ -129,7 +133,7 @@ class MeshFileSyncSession(
         } else {
             serveRequests(connection, remoteRequests, engine)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
-            val count = downloadPhase(connection, remoteDeviceId, prepared, engine)
+            val count = downloadPhase(connection, remoteDeviceId, prepared, missingAttachments, engine)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             count
         }
@@ -154,6 +158,7 @@ class MeshFileSyncSession(
         connection: AuthenticatedPeerConnection,
         remoteDeviceId: String,
         downloads: List<PreparedDownload>,
+        attachmentDownloads: List<MeshChatMessage>,
         engine: FileSyncEngine,
     ): Int {
         val acknowledgementBlocked = mutableSetOf<String>()
@@ -215,6 +220,9 @@ class MeshFileSyncSession(
                 }
             }
         }
+        attachmentDownloads.forEach { message ->
+            runCatching { chatAttachments.receive(connection, message, onBytesTransferred) }
+        }
         return appliedChangeCount
     }
 
@@ -225,6 +233,10 @@ class MeshFileSyncSession(
     ) {
         repeat(requestCount) {
             val request = FileTransferWireCodec.decode(connection.receive())
+            if (request is FileTransferMessage.AttachmentRequest) {
+                chatAttachments.serve(connection, request, onBytesTransferred)
+                return@repeat
+            }
             val folderId = when (request) {
                 is FileTransferMessage.WholeFileRequest -> request.folderId
                 is FileTransferMessage.BlockRequest -> request.folderId

@@ -61,6 +61,7 @@ class MeshSyncSession(
     private val fileHistory = FileHistoryRepository(appContext, database, identity.deviceId)
     private val storageCapacity = StorageCapacityGuard(appContext)
     private val lowStorageApprovals = LowStorageApprovalStore(appContext)
+    private val chatAttachments = ChatAttachmentStore(appContext, database)
 
     suspend fun run(connection: AuthenticatedPeerConnection): MeshSyncResult {
         val remoteDeviceId = connection.peer.deviceId
@@ -69,6 +70,11 @@ class MeshSyncSession(
         }
 
         val receiveResult = exchangeMetadata(connection)
+        chatAttachments.cleanupExpired(groupId)
+        val missingAttachments = chatAttachments.missing(
+            database.chatDao().recentMessages(groupId, MAX_REPLICATED_CHAT_ATTACHMENTS)
+                .asReversed().map { it.toDomain() },
+        )
         scanConfiguredFolders()
 
         val localCatalog = buildCatalog(remoteDeviceId)
@@ -96,12 +102,12 @@ class MeshSyncSession(
                 transferClaims.owns(plan.transferClaimKey())
         }
         val prepared = prepareDownloads(plans)
-        val localRequestCount = prepared.sumOf(PreparedDownload::requestCount)
+        val localRequestCount = prepared.sumOf(PreparedDownload::requestCount) + missingAttachments.size
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequestCount)))
         val remoteRequestCount = connection.receiveSession<MeshSessionMessage.TransferPlan>().requestCount
 
         val downloadResult = if (identity.deviceId < remoteDeviceId) {
-            val result = downloadPhase(connection, remoteDeviceId, prepared)
+            val result = downloadPhase(connection, remoteDeviceId, prepared, missingAttachments)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             serveRequests(connection, remoteRequestCount)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
@@ -109,7 +115,7 @@ class MeshSyncSession(
         } else {
             serveRequests(connection, remoteRequestCount)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
-            val result = downloadPhase(connection, remoteDeviceId, prepared)
+            val result = downloadPhase(connection, remoteDeviceId, prepared, missingAttachments)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             result
         }
@@ -278,6 +284,7 @@ class MeshSyncSession(
         connection: AuthenticatedPeerConnection,
         remoteDeviceId: String,
         downloads: List<PreparedDownload>,
+        attachmentDownloads: List<MeshChatMessage>,
     ): DownloadPhaseResult {
         val acknowledgementBlocked = mutableSetOf<String>()
         val storageBlockedFolders = mutableSetOf<String>()
@@ -357,12 +364,19 @@ class MeshSyncSession(
                 }
             }
         }
+        attachmentDownloads.forEach { message ->
+            runCatching { chatAttachments.receive(connection, message, onBytesTransferred) }
+        }
         return DownloadPhaseResult(storageBlockedFolders, storageWarnings, appliedChangeCount)
     }
 
     private suspend fun serveRequests(connection: AuthenticatedPeerConnection, requestCount: Int) {
         repeat(requestCount) {
             val request = FileTransferWireCodec.decode(connection.receive())
+            if (request is FileTransferMessage.AttachmentRequest) {
+                chatAttachments.serve(connection, groupId, request, onBytesTransferred)
+                return@repeat
+            }
             val folderId = when (request) {
                 is FileTransferMessage.WholeFileRequest -> request.folderId
                 is FileTransferMessage.BlockRequest -> request.folderId
@@ -430,6 +444,7 @@ class MeshSyncSession(
 
     private companion object {
         const val MAX_INDEX_FILES = 50_000
+        const val MAX_REPLICATED_CHAT_ATTACHMENTS = 5_000
         const val RESUMABLE_THRESHOLD_BYTES = 1024 * 1024L
     }
 }
@@ -465,11 +480,17 @@ private fun mergeStorageWarnings(warnings: List<StorageSyncWarning>): StorageSyn
 
 private suspend inline fun <reified T : MeshSessionMessage> AuthenticatedPeerConnection.receiveSession(): T {
     return when (val message = MeshSessionCodec.decode(receive())) {
-        is MeshSessionMessage.Error -> error(message.reason)
+        is MeshSessionMessage.Error -> if (message.reason == SESSION_BUSY_REASON) {
+            throw PeerSessionBusyException()
+        } else {
+            error(message.reason)
+        }
         is T -> message
         else -> error("Unexpected mesh session message")
     }
 }
+
+internal class PeerSessionBusyException : IllegalStateException(SESSION_BUSY_REASON)
 
 private fun LocalFolderBindingEntity.directDirectoryOrNull(): File? {
     val location = configuredLocationOrNull() ?: return null
@@ -483,3 +504,5 @@ private fun LocalFolderBindingEntity.configuredLocationOrNull(): String? {
 }
 
 private fun JSONArray.strings(): List<String> = List(length()) { getString(it) }
+
+internal const val SESSION_BUSY_REASON = "Peer session already active"

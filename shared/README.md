@@ -1,6 +1,6 @@
 # Shared implementation
 
-The shared build contains platform-neutral behavior consumed directly by SyncDroid and SyncTosh.
+The shared build contains platform-neutral behavior consumed directly by SyncDroid-Mesh, SyncTosh and SyncDows.
 
 - `mesh-protocol`: version vectors, canonical signed payloads, mesh/pairing/peer/session/index/transfer models, bounded wire codecs, identity helpers, identifiers, and legacy compatibility.
 - `sync-core`: file conflict decisions, content-block manifests, hashing, safe paths, index reconciliation, acknowledgements, and resumable-transfer progress.

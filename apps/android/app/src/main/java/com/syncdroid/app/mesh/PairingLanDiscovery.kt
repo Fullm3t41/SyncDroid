@@ -76,7 +76,7 @@ class PairingLanDiscovery(private val localDeviceId: String) : AutoCloseable {
             deviceId = deviceId,
             address = source,
             port = port,
-            serviceName = "SyncDroid LAN pairing",
+            serviceName = "SyncDroid-Mesh LAN pairing",
         ))
     }
 

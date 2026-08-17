@@ -6,7 +6,7 @@
   <String Id="LoadingHeader">Preparing SyncDows</String>
   <String Id="LoadingText">Checking the current installation and getting setup ready.</String>
   <String Id="InstallHeader">Ready to install</String>
-  <String Id="InstallMessage">Install the self-contained Windows peer for your SyncDroid mesh. No separate Java installation is required.</String>
+  <String Id="InstallMessage">Install the self-contained Windows peer for your SyncDroid-Mesh network. No separate Java installation is required.</String>
   <String Id="InstallVersion">Version [WixBundleVersion]</String>
   <String Id="ConfirmCancelMessage">Cancel SyncDows setup?</String>
   <String Id="ExecuteUpgradeRelatedBundleMessage">Previous SyncDows version</String>
@@ -36,7 +36,7 @@
   <String Id="SuccessInstallHeader">SyncDows is ready</String>
   <String Id="SuccessRepairHeader">SyncDows was repaired</String>
   <String Id="SuccessUninstallHeader">SyncDows was removed</String>
-  <String Id="SuccessMessage">Setup completed successfully. You can now connect this PC to your local SyncDroid mesh.</String>
+  <String Id="SuccessMessage">Setup completed successfully. You can now connect this PC to your local SyncDroid-Mesh network.</String>
   <String Id="SuccessLaunchButton">&amp;Launch</String>
   <String Id="SuccessRestartText">Restart Windows before using SyncDows.</String>
   <String Id="SuccessRestartButton">&amp;Restart</String>

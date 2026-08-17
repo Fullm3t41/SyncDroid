@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class RemainingWireGoldenTest {
     private val fixture = loadRemainingFixture()
@@ -52,6 +53,28 @@ class RemainingWireGoldenTest {
         assertGolden(
             "session.peerProof",
             StablePeerProofWireCodec.encode(StablePeerProofWireCodec.decode(fixture.required("session.peerProof").hexToBytes())),
+        )
+    }
+
+    @Test
+    fun chatAttachmentMetadataRoundTripsAndIsPartOfTheSignedPayload() {
+        val createdAt = 1_700_000_000_000L
+        val attachment = WireChatAttachment(
+            "save.sav",
+            "application/octet-stream",
+            42,
+            "ab".repeat(32),
+            createdAt + 30L * 24 * 60 * 60 * 1_000,
+        )
+        val chat = WireChatMessage("chat-attachment", "group-1", "phone-a", "", createdAt, "sig", attachment)
+        val decoded = MeshBundleWireCodec.decode(
+            MeshBundleWireCodec.encode(MeshStateBundleWire("Home", emptyList(), chatMessages = listOf(chat))),
+        )
+
+        assertEquals(chat, decoded.chatMessages.single())
+        assertFalse(
+            canonicalChatPayload("group-1", "phone-a", "", createdAt)
+                .contentEquals(canonicalChatPayload("group-1", "phone-a", "", createdAt, attachment)),
         )
     }
 

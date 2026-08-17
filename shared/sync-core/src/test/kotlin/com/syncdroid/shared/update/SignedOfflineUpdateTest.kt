@@ -24,7 +24,7 @@ class SignedOfflineUpdateTest {
         val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
         val publicKey = Base64.getEncoder().encodeToString(keyPair.public.encoded)
         val files = mapOf(
-            UpdatePlatform.Android to ("SyncDroid-0.2.1-Android.apk" to byteArrayOf(1, 2, 3)),
+            UpdatePlatform.Android to ("SyncDroid-Mesh-0.2.1-Android.apk" to byteArrayOf(1, 2, 3)),
             UpdatePlatform.MacOsArm64 to ("SyncTosh-0.2.1-macOS-arm64.dmg" to byteArrayOf(4, 5, 6, 7)),
             UpdatePlatform.WindowsX64 to ("SyncDows-0.2.1-Windows-x64.exe" to byteArrayOf(8, 9)),
         )
@@ -49,7 +49,7 @@ class SignedOfflineUpdateTest {
         }
         val root = Files.createTempDirectory("signed-offline-update")
         try {
-            val bundle = root.resolve("SyncDroid-0.2.1-offline.sdu")
+            val bundle = root.resolve("SyncDroid-Mesh-0.2.1-offline.sdu")
             ZipOutputStream(Files.newOutputStream(bundle)).use { zip ->
                 fun add(name: String, bytes: ByteArray) {
                     zip.putNextEntry(ZipEntry(name))

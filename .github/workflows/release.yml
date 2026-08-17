@@ -100,16 +100,16 @@ jobs:
           key_store="$RUNNER_TEMP/syncdroid-release.jks"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$key_store"
           echo "SYNCDROID_KEYSTORE_PATH=$key_store" >> "$GITHUB_ENV"
-      - name: Test and package SyncDroid
+      - name: Test and package SyncDroid-Mesh
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
           cd apps/android
           ./gradlew --no-daemon clean testDebugUnitTest assembleRelease
           mkdir -p build/release
-          cp app/build/outputs/apk/release/app-release.apk "build/release/SyncDroid-${version}-Android.apk"
+          cp app/build/outputs/apk/release/app-release.apk "build/release/SyncDroid-Mesh-${version}-Android.apk"
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
-          "$apksigner_path" verify --verbose "build/release/SyncDroid-${version}-Android.apk"
+          "$apksigner_path" verify --verbose "build/release/SyncDroid-Mesh-${version}-Android.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: release-android
@@ -134,7 +134,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           windows="SyncDows-${version}-Windows-x64.exe"
           macos="SyncTosh-${version}-macOS-arm64.dmg"
-          android="SyncDroid-${version}-Android.apk"
+          android="SyncDroid-Mesh-${version}-Android.apk"
           for file in "$windows" "$macos" "$android"; do test -f "release-assets/$file"; done
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
           {
@@ -170,10 +170,10 @@ jobs:
           base64 -w 0 "$signature_binary" > release-assets/syncdroid-update.properties.sig
           (
             cd release-assets
-            zip -q "SyncDroid-${version}-offline.sdu" \
+            zip -q "SyncDroid-Mesh-${version}-offline.sdu" \
               syncdroid-update.properties \
               syncdroid-update.properties.sig \
-              "SyncDroid-${version}-Android.apk" \
+              "SyncDroid-Mesh-${version}-Android.apk" \
               "SyncTosh-${version}-macOS-arm64.dmg" \
               "SyncDows-${version}-Windows-x64.exe"
           )
@@ -186,10 +186,10 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           public_assets=(
-            "release-assets/SyncDroid-${version}-Android.apk"
+            "release-assets/SyncDroid-Mesh-${version}-Android.apk"
             "release-assets/SyncTosh-${version}-macOS-arm64.dmg"
             "release-assets/SyncDows-${version}-Windows-x64.exe"
-            "release-assets/SyncDroid-${version}-offline.sdu"
+            "release-assets/SyncDroid-Mesh-${version}-offline.sdu"
           )
           for file in "${public_assets[@]}"; do test -f "$file"; done
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -201,12 +201,55 @@ jobs:
               --verify-tag \
               --draft=false \
               --latest \
-              --title "SyncDroid ${GITHUB_REF_NAME#v}"
+              --title "SyncDroid-Mesh ${GITHUB_REF_NAME#v}"
           else
             gh release create "$GITHUB_REF_NAME" "${public_assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --generate-notes \
               --latest \
-              --title "SyncDroid ${GITHUB_REF_NAME#v}"
+              --title "SyncDroid-Mesh ${GITHUB_REF_NAME#v}"
+          fi
+      - name: Publish signed updater metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="repos/${GITHUB_REPOSITORY}"
+          parent="$(gh api "$repo/git/ref/heads/updates" --jq .object.sha 2>/dev/null || true)"
+
+          create_blob() {
+            base64 -w 0 "$1" \
+              | jq -Rs '{content: ., encoding: "base64"}' \
+              | gh api --method POST "$repo/git/blobs" --input - --jq .sha
+          }
+
+          manifest_blob="$(create_blob release-assets/syncdroid-update.properties)"
+          signature_blob="$(create_blob release-assets/syncdroid-update.properties.sig)"
+          tree="$(
+            jq -n \
+              --arg manifest "$manifest_blob" \
+              --arg signature "$signature_blob" \
+              '{tree: [
+                {path: "syncdroid-update.properties", mode: "100644", type: "blob", sha: $manifest},
+                {path: "syncdroid-update.properties.sig", mode: "100644", type: "blob", sha: $signature}
+              ]}' \
+              | gh api --method POST "$repo/git/trees" --input - --jq .sha
+          )"
+          commit="$(
+            if [[ -n "$parent" ]]; then
+              jq -n --arg tree "$tree" --arg parent "$parent" --arg version "$GITHUB_REF_NAME" \
+                '{message: "Publish updater metadata for " + $version, tree: $tree, parents: [$parent]}'
+            else
+              jq -n --arg tree "$tree" --arg version "$GITHUB_REF_NAME" \
+                '{message: "Publish updater metadata for " + $version, tree: $tree, parents: []}'
+            fi \
+              | gh api --method POST "$repo/git/commits" --input - --jq .sha
+          )"
+
+          if [[ -n "$parent" ]]; then
+            gh api --method PATCH "$repo/git/refs/heads/updates" -f sha="$commit" -F force=false >/dev/null
+          else
+            gh api --method POST "$repo/git/refs" -f ref="refs/heads/updates" -f sha="$commit" >/dev/null
           fi

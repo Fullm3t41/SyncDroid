@@ -19,6 +19,11 @@ import com.syncdroid.app.storage.formatStorageBytes
 class SyncNotificationCenter(context: Context) {
     private val appContext = context.applicationContext
     private val manager = NotificationManagerCompat.from(appContext)
+    private val notificationState = appContext.getSharedPreferences(
+        "sync_notification_state",
+        Context.MODE_PRIVATE,
+    )
+    private val failureStateLock = Any()
     private var lastStorageWarningKey: String? = null
 
     init { createChannels() }
@@ -38,8 +43,15 @@ class SyncNotificationCenter(context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun showSyncComplete(peerName: String) {
+    fun showSyncComplete(peerId: String, peerName: String) {
         if (!canNotify()) return
+        synchronized(failureStateLock) {
+            val failures = notificationState.getStringSet(ACTIVE_FAILURE_PEERS_KEY, emptySet())
+                .orEmpty().toMutableSet()
+            if (failures.remove(peerId)) {
+                notificationState.edit().putStringSet(ACTIVE_FAILURE_PEERS_KEY, failures).apply()
+            }
+        }
         manager.notify(SYNC_NOTIFICATION_ID, NotificationCompat.Builder(appContext, CHANNEL_SYNC)
             .setSmallIcon(R.drawable.ic_syncdroid)
             .setContentTitle("Sync complete")
@@ -51,15 +63,27 @@ class SyncNotificationCenter(context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun showSyncFailed(peerName: String) {
+    fun showSyncFailed(peerId: String, peerName: String) {
         if (!canNotify()) return
-        manager.notify(SYNC_NOTIFICATION_ID, NotificationCompat.Builder(appContext, CHANNEL_ACTIONS)
+        val shouldAlert = synchronized(failureStateLock) {
+            val failures = notificationState.getStringSet(ACTIVE_FAILURE_PEERS_KEY, emptySet())
+                .orEmpty().toMutableSet()
+            if (!failures.add(peerId)) {
+                false
+            } else {
+                notificationState.edit().putStringSet(ACTIVE_FAILURE_PEERS_KEY, failures).apply()
+                true
+            }
+        }
+        val builder = NotificationCompat.Builder(appContext, CHANNEL_ACTIONS)
             .setSmallIcon(R.drawable.ic_syncdroid)
             .setContentTitle("Sync needs attention")
             .setContentText("Could not finish syncing with $peerName. Tap to review.")
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(openAppIntent())
-            .build())
+        if (!shouldAlert) builder.setSilent(true)
+        manager.notify(SYNC_NOTIFICATION_ID, builder.build())
     }
 
     @SuppressLint("MissingPermission")
@@ -90,11 +114,12 @@ class SyncNotificationCenter(context: Context) {
         }
         manager.notify(ACTION_NOTIFICATION_ID, NotificationCompat.Builder(appContext, CHANNEL_ACTIONS)
             .setSmallIcon(R.drawable.ic_syncdroid)
-            .setContentTitle("SyncDroid needs your input")
+            .setContentTitle("SyncDroid-Mesh needs your input")
             .setContentText(parts.joinToString(" · "))
             .setStyle(NotificationCompat.BigTextStyle().bigText(parts.joinToString(" · ")))
             .setNumber(conflicts + foldersToConfigure)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(openAppIntent())
             .build())
     }
@@ -165,5 +190,6 @@ class SyncNotificationCenter(context: Context) {
         const val ACTION_NOTIFICATION_ID = 1002
         const val CHAT_NOTIFICATION_ID = 1003
         const val STORAGE_NOTIFICATION_ID = 1004
+        const val ACTIVE_FAILURE_PEERS_KEY = "active_failure_peers"
     }
 }

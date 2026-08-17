@@ -63,7 +63,7 @@ $signaturePath = Join-Path $assetRoot "syncdroid-update.properties.sig"
 Remove-Item -LiteralPath $signatureBinary -Force
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $assetRoot "SyncDroid-$version-offline.sdu"
+    $OutputPath = Join-Path $assetRoot "SyncDroid-Mesh-$version-offline.sdu"
 }
 $resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
 $temporaryZip = [System.IO.Path]::ChangeExtension($resolvedOutput, ".zip")

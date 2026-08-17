@@ -215,6 +215,18 @@ fun SyncToshApp(
                                 },
                                 meshAvailable = meshState.profile != null,
                                 onSend = runtime::sendChat,
+                                onAttach = {
+                                    MacFolderPicker.chooseChatAttachment()?.let(runtime::sendChatAttachment)
+                                },
+                                onDropFiles = runtime::sendChatAttachments,
+                                onOpenAttachment = { message ->
+                                    runCatching {
+                                        val path = requireNotNull(runtime.chatAttachmentPath(message.messageId)) {
+                                            "This attachment has not downloaded yet"
+                                        }
+                                        MacFolderPicker.openChatAttachment(path)
+                                    }.onFailure { featureNotice = it.message ?: "Could not open this attachment" }
+                                },
                             )
                             MainSection.Settings -> SettingsScreen(
                                 updateState = updateState,

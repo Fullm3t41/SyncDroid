@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Cloud
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SettingsBrightness
@@ -68,11 +71,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragData
+import androidx.compose.ui.draganddrop.dragData
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -94,6 +108,7 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.nio.file.Path
 import com.syncdows.app.mesh.upcomingDiscoveryWindows
 import kotlinx.coroutines.delay
 import com.syncdroid.shared.update.UpdateState
@@ -562,7 +577,7 @@ private fun TrustedDeviceList(peers: List<MeshPeer>, onRemoveDevice: (String) ->
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun ChatScreen(
     messages: List<MeshChatMessage>,
@@ -570,13 +585,36 @@ fun ChatScreen(
     deviceNames: Map<String, String>,
     meshAvailable: Boolean,
     onSend: (String) -> Unit,
+    onAttach: () -> Unit,
+    onDropFiles: (List<Path>) -> Unit,
+    onOpenAttachment: (MeshChatMessage) -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
     var copied by remember { mutableStateOf(false) }
     var copyToken by remember { mutableIntStateOf(0) }
+    var dropActive by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
     val ordered = messages.sortedWith(compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId))
+    val dropTarget = remember(meshAvailable, onDropFiles) {
+        object : DragAndDropTarget {
+            override fun onEntered(event: DragAndDropEvent) { dropActive = true }
+            override fun onExited(event: DragAndDropEvent) { dropActive = false }
+            override fun onEnded(event: DragAndDropEvent) { dropActive = false }
+
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                dropActive = false
+                if (!meshAvailable) return false
+                val paths = (event.dragData() as? DragData.FilesList)
+                    ?.readFiles()
+                    ?.map(Path::of)
+                    .orEmpty()
+                if (paths.isEmpty()) return false
+                onDropFiles(paths)
+                return true
+            }
+        }
+    }
 
     fun sendDraft() {
         val body = draft.trim()
@@ -597,7 +635,14 @@ fun ChatScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier.fillMaxSize().dragAndDropTarget(
+            shouldStartDragAndDrop = { event ->
+                meshAvailable && runCatching { event.dragData() is DragData.FilesList }.getOrDefault(false)
+            },
+            target = dropTarget,
+        ),
+    ) {
         Column(Modifier.fillMaxSize()) {
             Column(Modifier.padding(horizontal = 26.dp, vertical = 24.dp)) {
                 Text("Mesh chat", style = MaterialTheme.typography.displaySmall)
@@ -666,11 +711,13 @@ fun ChatScreen(
                                         bottomEnd = 20.dp,
                                     ),
                                 ) {
-                                    Text(
-                                        message.body,
-                                        modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp),
-                                        style = MaterialTheme.typography.bodyLarge,
-                                    )
+                                    Column(Modifier.padding(horizontal = 15.dp, vertical = 11.dp)) {
+                                        if (message.body.isNotEmpty()) Text(message.body, style = MaterialTheme.typography.bodyLarge)
+                                        message.attachment?.let {
+                                            if (message.body.isNotEmpty()) Spacer(Modifier.height(9.dp))
+                                            ChatAttachmentCard(message, onOpenAttachment)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -683,14 +730,25 @@ fun ChatScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
+                    IconButton(onClick = onAttach, enabled = meshAvailable) {
+                        Icon(Icons.Rounded.AttachFile, contentDescription = "Attach a file")
+                    }
                     OutlinedTextField(
                         value = draft,
                         onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 4_000) draft = it },
                         enabled = meshAvailable,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).onPreviewKeyEvent { event ->
+                            if (event.key == Key.Enter && !event.isShiftPressed) {
+                                if (event.type == KeyEventType.KeyDown) sendDraft()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                         placeholder = { Text(if (meshAvailable) "Message the mesh" else "Join a mesh to send messages") },
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
-                        singleLine = true,
+                        singleLine = false,
+                        maxLines = 5,
                     )
                     Button(onClick = ::sendDraft, enabled = meshAvailable && draft.isNotBlank()) { Text("Send") }
                 }
@@ -707,7 +765,53 @@ fun ChatScreen(
                 Text("Copied text.", modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp))
             }
         }
+        if (dropActive) {
+            Surface(
+                modifier = Modifier.fillMaxSize().padding(18.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f),
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                shape = RoundedCornerShape(28.dp),
+                shadowElevation = 10.dp,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Rounded.AttachFile, contentDescription = null, modifier = Modifier.size(38.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text("Drop files to send", style = MaterialTheme.typography.headlineSmall)
+                        Text("Each file will be shared with the mesh for 30 days")
+                    }
+                }
+            }
+        }
     }
+}
+
+@Composable
+private fun ChatAttachmentCard(message: MeshChatMessage, onOpen: (MeshChatMessage) -> Unit) {
+    val attachment = requireNotNull(message.attachment)
+    val remainingMillis = attachment.expiresAtMillis - System.currentTimeMillis()
+    val days = ((remainingMillis.coerceAtLeast(0) + 86_399_999) / 86_400_000).toInt()
+    Row(
+        modifier = Modifier.clickable(enabled = remainingMillis > 0) { onOpen(message) }.padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Icon(Icons.Rounded.InsertDriveFile, contentDescription = null)
+        Column {
+            Text(attachment.fileName, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${formatChatAttachmentSize(attachment.sizeBytes)} · ${if (remainingMillis > 0) "$days day${if (days == 1) "" else "s"} remaining" else "Expired"}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+private fun formatChatAttachmentSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
+    bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
+    bytes >= 1024 -> "%.1f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
 }
 
 @Composable
@@ -819,7 +923,7 @@ fun SettingsScreen(
                             SettingsActionRow(
                                 icon = Icons.Rounded.Info,
                                 title = "About SyncDows",
-                                detail = "Local-first · version ${updateState.currentVersion}",
+                                detail = "Created by Fullm3t41 · version ${updateState.currentVersion} · GNU GPLv3",
                                 onClick = {
                                     if (!offlineUpdateImportUnlocked) {
                                         aboutTapCount++

@@ -55,7 +55,7 @@ class ManagedFileRepository(private val rootDirectory: File) {
     private fun requireInsideRoot(file: File): File {
         val canonical = file.canonicalFile
         require(canonical == root || canonical.toPath().startsWith(root.toPath())) {
-            "Path is outside SyncDroid managed storage"
+            "Path is outside SyncDroid-Mesh managed storage"
         }
         return canonical
     }

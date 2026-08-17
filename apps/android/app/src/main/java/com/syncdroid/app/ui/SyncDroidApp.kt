@@ -16,6 +16,7 @@ import android.text.InputType
 import android.text.method.DigitsKeyListener
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Cloud
@@ -67,6 +69,7 @@ import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Schedule
@@ -134,6 +137,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.widget.doAfterTextChanged
+import androidx.core.content.FileProvider
 import com.syncdroid.app.model.PeerDevice
 import com.syncdroid.app.BuildConfig
 import com.syncdroid.app.model.SaveStatus
@@ -146,6 +150,7 @@ import com.syncdroid.app.cloud.CloudSyncPolicy
 import com.syncdroid.app.cloud.CloudSyncPolicyStore
 import com.syncdroid.app.cloud.CloudSyncScope
 import com.syncdroid.app.mesh.AndroidDeviceIdentity
+import com.syncdroid.app.mesh.ChatAttachmentStore
 import com.syncdroid.app.mesh.LocalFolderBindingState
 import com.syncdroid.app.mesh.LocalDeviceNameStore
 import com.syncdroid.app.mesh.LocalMeshProfileStore
@@ -153,6 +158,7 @@ import com.syncdroid.app.mesh.MembershipEvent
 import com.syncdroid.app.mesh.MeshFolderRepository
 import com.syncdroid.app.mesh.MeshChatRepository
 import com.syncdroid.app.mesh.MeshMembershipRepository
+import com.syncdroid.app.mesh.toDomain
 import com.syncdroid.app.mesh.PairingCodeOffer
 import com.syncdroid.app.mesh.PairingCodes
 import com.syncdroid.app.mesh.PairingCoordinator
@@ -196,12 +202,14 @@ import com.syncdroid.app.sync.SyncStatusStore
 import com.syncdroid.app.sync.detailedSyncTimestamp
 import com.syncdroid.app.sync.relativeLastSyncLabel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import androidx.core.view.WindowCompat
 import com.syncdroid.shared.update.UpdateState
@@ -294,6 +302,39 @@ fun SyncDroidApp() {
     }
     val meshChat = remember(database, identity.deviceId) { MeshChatRepository(database, identity) }
     val scope = rememberCoroutineScope()
+    val chatAttachments = remember(context, database) { ChatAttachmentStore(context, database) }
+    val chatAttachmentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val createdAtMillis = System.currentTimeMillis()
+                    val prepared = chatAttachments.prepare(context.contentResolver, uri, createdAtMillis)
+                    try {
+                        val message = meshChat.createSigned(
+                            groupId = meshProfile.groupId,
+                            body = "",
+                            attachment = prepared.metadata,
+                            createdAtMillis = createdAtMillis,
+                        )
+                        chatAttachments.commit(message, prepared)
+                        meshChat.receive(message)
+                    } catch (error: Throwable) {
+                        prepared.temporaryFile.delete()
+                        throw error
+                    }
+                }
+                SyncServiceController.propagateChatChange(context)
+            }.onFailure { error ->
+                Toast.makeText(
+                    context,
+                    error.message ?: "Could not attach that file.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
     LaunchedEffect(updateService) { updateService.checkForUpdate(force = false) }
     LaunchedEffect(fileHistory) { fileHistory.cleanupExpired() }
     val localFolderViews by remember(database, identity.deviceId, meshProfile.groupId) {
@@ -1011,7 +1052,14 @@ fun SyncDroidApp() {
                         currentDeviceId = identity.deviceId,
                         deviceNames = meshDevices.associate { it.deviceId to it.displayName },
                         onSend = { body ->
-                            scope.launch { meshChat.send(meshProfile.groupId, body) }
+                            scope.launch {
+                                meshChat.send(meshProfile.groupId, body)
+                                SyncServiceController.propagateChatChange(context)
+                            }
+                        },
+                        onAttach = { chatAttachmentLauncher.launch(arrayOf("*/*")) },
+                        onOpenAttachment = { message ->
+                            openChatAttachment(context, chatAttachments, message)
                         },
                         modifier = Modifier.padding(scaffoldPadding),
                     )
@@ -1162,9 +1210,9 @@ private fun StorageSyncWarningDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     if (isLowStorage) {
-                        "One or more sync destinations have less than the smaller of 10 GB or 5% of their total capacity available. SyncDroid has paused before transferring files."
+                        "One or more sync destinations have less than the smaller of 10 GB or 5% of their total capacity available. SyncDroid-Mesh has paused before transferring files."
                     } else {
-                        "SyncDroid cannot safely receive more data on the destinations below. Incoming file transfers are disabled until enough space is available. Files on other devices are not deleted or changed."
+                        "SyncDroid-Mesh cannot safely receive more data on the destinations below. Incoming file transfers are disabled until enough space is available. Files on other devices are not deleted or changed."
                     },
                 )
                 warning.destinations.forEach { destination ->
@@ -1392,6 +1440,8 @@ private fun ChatScreen(
     currentDeviceId: String,
     deviceNames: Map<String, String>,
     onSend: (String) -> Unit,
+    onAttach: () -> Unit,
+    onOpenAttachment: (ChatMessageEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
@@ -1470,10 +1520,13 @@ private fun ChatScreen(
                             ?: message.authorDeviceId.take(8),
                         isCurrentDevice = message.authorDeviceId == currentDeviceId,
                         onCopy = {
-                            clipboard.setText(AnnotatedString(message.body))
-                            showCopiedConfirmation = true
-                            copyConfirmationToken++
+                            if (message.body.isNotEmpty()) {
+                                clipboard.setText(AnnotatedString(message.body))
+                                showCopiedConfirmation = true
+                                copyConfirmationToken++
+                            }
                         },
+                        onOpenAttachment = { onOpenAttachment(message) },
                     )
                 }
             }
@@ -1488,6 +1541,9 @@ private fun ChatScreen(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                IconButton(onClick = onAttach) {
+                    Icon(Icons.Rounded.AttachFile, contentDescription = "Attach a file")
+                }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 4_000) draft = it },
@@ -1543,6 +1599,7 @@ private fun ChatMessageRow(
     authorName: String,
     isCurrentDevice: Boolean,
     onCopy: () -> Unit,
+    onOpenAttachment: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1585,7 +1642,7 @@ private fun ChatMessageRow(
             Spacer(Modifier.height(5.dp))
             Surface(
                 modifier = Modifier.combinedClickable(
-                    onClick = {},
+                    onClick = { if (message.attachmentFileName != null) onOpenAttachment() },
                     onLongClick = onCopy,
                     onLongClickLabel = "Copy message text",
                 ),
@@ -1606,11 +1663,33 @@ private fun ChatMessageRow(
                     bottomEnd = 20.dp,
                 ),
             ) {
-                Text(
-                    message.body,
-                    modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                )
+                Column(Modifier.padding(horizontal = 15.dp, vertical = 11.dp)) {
+                    if (message.body.isNotEmpty()) {
+                        Text(message.body, style = MaterialTheme.typography.bodyLarge)
+                    }
+                    if (message.body.isNotEmpty() && message.attachmentFileName != null) {
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    message.attachmentFileName?.let { fileName ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(Icons.Rounded.InsertDriveFile, contentDescription = null)
+                            Column(Modifier.weight(1f)) {
+                                Text(fileName, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    chatAttachmentSummary(
+                                        message.attachmentSizeBytes ?: 0L,
+                                        message.attachmentExpiresAtMillis ?: 0L,
+                                    ),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1618,6 +1697,45 @@ private fun ChatMessageRow(
 
 private fun formatChatTime(timestamp: Long): String =
     SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+private fun chatAttachmentSummary(sizeBytes: Long, expiresAtMillis: Long): String {
+    val size = when {
+        sizeBytes >= 1024L * 1024 * 1024 -> String.format(Locale.getDefault(), "%.1f GB", sizeBytes / (1024.0 * 1024 * 1024))
+        sizeBytes >= 1024L * 1024 -> String.format(Locale.getDefault(), "%.1f MB", sizeBytes / (1024.0 * 1024))
+        sizeBytes >= 1024L -> String.format(Locale.getDefault(), "%.1f KB", sizeBytes / 1024.0)
+        else -> "$sizeBytes B"
+    }
+    val remainingMillis = expiresAtMillis - System.currentTimeMillis()
+    val retention = if (remainingMillis <= 0L) {
+        "Expired"
+    } else {
+        val days = ((remainingMillis + MILLIS_PER_DAY - 1) / MILLIS_PER_DAY).coerceAtLeast(1)
+        "$days day${if (days == 1L) "" else "s"} remaining"
+    }
+    return "$size · $retention"
+}
+
+private fun openChatAttachment(
+    context: Context,
+    store: ChatAttachmentStore,
+    message: ChatMessageEntity,
+) {
+    val file = store.localFile(message.toDomain())
+    if (file == null) {
+        Toast.makeText(context, "This attachment has not downloaded yet or has expired.", Toast.LENGTH_LONG).show()
+        return
+    }
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.chat-attachments", file)
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, message.attachmentMediaType?.ifBlank { null } ?: "application/octet-stream")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching { context.startActivity(Intent.createChooser(intent, "Open attachment")) }
+        .onFailure {
+            Toast.makeText(context, "No app can open this attachment.", Toast.LENGTH_LONG).show()
+        }
+}
+
+private const val MILLIS_PER_DAY = 24L * 60 * 60 * 1_000
 
 @Composable
 private fun SyncScreen(
@@ -1895,7 +2013,7 @@ private fun FolderSettingsScreen(
                     shape = RoundedCornerShape(18.dp),
                 ) {
                     Text(
-                        "Undoing an exception makes that file eligible again. If another device or cloud storage still has it, SyncDroid can copy it back into this folder.",
+                        "Undoing an exception makes that file eligible again. If another device or cloud storage still has it, SyncDroid-Mesh can copy it back into this folder.",
                         modifier = Modifier.padding(16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -2042,7 +2160,7 @@ private fun DevicesScreen(
             title = { Text("Leave this mesh?") },
             text = {
                 Text(
-                    "SyncDroid will try to announce that this device has left, then move it to a new private mesh. Other devices and your local files will not be deleted.",
+                    "SyncDroid-Mesh will try to announce that this device has left, then move it to a new private mesh. Other devices and your local files will not be deleted.",
                 )
             },
             confirmButton = {
@@ -2444,7 +2562,7 @@ private fun FileHistoryScreen(
         ) {
             item {
                 Text(
-                    "Files deleted by SyncDroid are retained on this device for 30 days. Recovering a file creates a new mesh update so it returns to the other configured devices.",
+                    "Files deleted by SyncDroid-Mesh are retained on this device for 30 days. Recovering a file creates a new mesh update so it returns to the other configured devices.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2609,7 +2727,7 @@ private fun SettingsScreen(
     ) {
         item {
             Text("Settings", style = MaterialTheme.typography.displaySmall)
-            Text("Shape how SyncDroid behaves on this device.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Shape how SyncDroid-Mesh behaves on this device.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             SettingsCard {
@@ -2654,8 +2772,9 @@ private fun SettingsScreen(
             SettingsCard {
                 SettingsActionRow(
                     icon = Icons.Rounded.Info,
-                    title = "About SyncDroid",
-                    detail = "Local-first · version ${BuildConfig.VERSION_NAME}",
+                    title = "About SyncDroid-Mesh",
+                    detail = "Created by Fullm3t41 · version ${BuildConfig.VERSION_NAME} · GNU GPLv3",
+                    showChevron = false,
                     onClick = {
                         if (!offlineUpdateImportUnlocked) {
                             aboutTapCount++
@@ -2695,7 +2814,7 @@ private fun UpdateCard(state: UpdateState, onClick: () -> Unit) {
         is UpdateState.Downloading -> "Downloading update"
         is UpdateState.Ready -> "Update ready"
         is UpdateState.Checking -> "Checking for updates"
-        is UpdateState.UpToDate -> "SyncDroid is up to date"
+        is UpdateState.UpToDate -> "SyncDroid-Mesh is up to date"
         is UpdateState.Failed -> if (state.updateStillAvailable) "Update download paused" else "Update check unavailable"
         is UpdateState.Idle -> "Software update"
     }
@@ -3034,7 +3153,7 @@ private fun PowerSettingsScreen(
                         Spacer(Modifier.width(11.dp))
                         Text(
                             if (discoveryPolicy.alwaysOnDiscovery) {
-                                "Discovery stays available continuously, including while SyncDroid is in the background. This uses more power and is best suited to plugged-in devices. Your scheduled settings are preserved for later."
+                                "Discovery stays available continuously, including while SyncDroid-Mesh is in the background. This uses more power and is best suited to plugged-in devices. Your scheduled settings are preserved for later."
                             } else {
                                 "Rendezvous times share a midnight-based calendar on every device. The 48-hour cadence runs on alternating midnights and the weekly cadence runs Monday at 00:00. Fresh installs check every three hours, and discovery windows can remain open for 5, 10 or 15 minutes. Your selected window is $windowDuration."
                             },
@@ -3139,7 +3258,13 @@ private fun SettingsSwitchRow(
 }
 
 @Composable
-private fun SettingsActionRow(icon: ImageVector, title: String, detail: String, onClick: () -> Unit) {
+private fun SettingsActionRow(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    onClick: () -> Unit,
+    showChevron: Boolean = true,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3153,7 +3278,9 @@ private fun SettingsActionRow(icon: ImageVector, title: String, detail: String, 
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text("›", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (showChevron) {
+            Text("›", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -3206,7 +3333,7 @@ private fun StorageAccessDialog(
         title = { Text("Choose how to browse") },
         text = {
             Text(
-                "Allow full file access to use SyncDroid's built-in file manager and create folders. " +
+                "Allow full file access to use SyncDroid-Mesh's built-in file manager and create folders. " +
                     "If you prefer not to, Android's folder picker will be used instead.",
             )
         },

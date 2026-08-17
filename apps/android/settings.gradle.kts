@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SyncDroid"
+rootProject.name = "SyncDroid-Mesh"
 include(":app")
 include(":mesh-protocol", ":sync-core")
 project(":mesh-protocol").projectDir = file("../../shared/mesh-protocol")

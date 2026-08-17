@@ -66,6 +66,15 @@ data class WireChatMessage(
     val body: String,
     val createdAtMillis: Long,
     val signatureBase64: String,
+    val attachment: WireChatAttachment? = null,
+)
+
+data class WireChatAttachment(
+    val fileName: String,
+    val mediaType: String,
+    val sizeBytes: Long,
+    val contentSha256: String,
+    val expiresAtMillis: Long,
 )
 
 data class MeshStateBundleWire(
@@ -168,7 +177,7 @@ object MeshBundleWireCodec {
         val memberships = List(input.readSafeCount()) { input.readMembership() }
         val folders = List(input.readSafeCount()) { input.readFolder() }
         val exceptions = if (minor >= 1) List(input.readSafeCount()) { input.readException() } else emptyList()
-        val chat = if (minor >= 2) List(input.readSafeCount()) { input.readChat() } else emptyList()
+        val chat = if (minor >= 2) List(input.readSafeCount()) { input.readChat(minor) } else emptyList()
         require(input.available() == 0) { "Unexpected data after mesh bundle" }
         MeshStateBundleWire(groupName, memberships, folders, exceptions, chat)
     }
@@ -219,11 +228,30 @@ object MeshBundleWireCodec {
     private fun DataOutputStream.writeChat(value: WireChatMessage) {
         writeUtf8(value.messageId); writeUtf8(value.groupId); writeUtf8(value.authorDeviceId); writeUtf8(value.body)
         writeLong(value.createdAtMillis); writeUtf8(value.signatureBase64)
+        writeBoolean(value.attachment != null)
+        value.attachment?.let { attachment ->
+            writeUtf8(attachment.fileName)
+            writeUtf8(attachment.mediaType)
+            writeLong(attachment.sizeBytes)
+            writeUtf8(attachment.contentSha256)
+            writeLong(attachment.expiresAtMillis)
+        }
     }
 
-    private fun DataInputStream.readChat() = WireChatMessage(
-        readUtf8(), readUtf8(), readUtf8(), readUtf8(), readLong(), readUtf8(),
-    )
+    private fun DataInputStream.readChat(minor: Int): WireChatMessage {
+        val messageId = readUtf8()
+        val groupId = readUtf8()
+        val authorDeviceId = readUtf8()
+        val body = readUtf8()
+        val createdAtMillis = readLong()
+        val signatureBase64 = readUtf8()
+        val attachment = if (minor >= 4 && readBoolean()) WireChatAttachment(
+            readUtf8(), readUtf8(), readLong(), readUtf8(), readLong(),
+        ) else null
+        return WireChatMessage(
+            messageId, groupId, authorDeviceId, body, createdAtMillis, signatureBase64, attachment,
+        )
+    }
 
     private fun DataInputStream.readLegacyMembership() = WireMembershipEvent(
         readUTF(), readUTF(), readUTF(), readUTF(), readUTF(), readUTF(),
@@ -261,7 +289,7 @@ object MeshBundleWireCodec {
     private val MAGIC_V2 = byteArrayOf('S'.code.toByte(), 'D'.code.toByte(), 'M'.code.toByte(), 'B'.code.toByte())
     private const val LEGACY_MAGIC_V1 = "syncdroid-mesh-state-v1"
     private const val PROTOCOL_MAJOR = 2
-    private const val PROTOCOL_MINOR = 3
+    private const val PROTOCOL_MINOR = 4
     private const val MAX_ITEMS = 10_000
     private const val MAX_STRING_BYTES = 1024 * 1024
     private const val MAX_BUNDLE_BYTES = 16 * 1024 * 1024

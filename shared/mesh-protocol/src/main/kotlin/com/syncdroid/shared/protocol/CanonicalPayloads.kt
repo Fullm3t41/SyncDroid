@@ -135,13 +135,25 @@ fun canonicalChatPayload(
     authorDeviceId: String,
     body: String,
     createdAtMillis: Long,
-): ByteArray = canonicalBytes {
-    string("syncdroid-chat-v1")
-    string(groupId)
-    string(authorDeviceId)
-    string(body)
-    int64(createdAtMillis)
-}
+    attachment: WireChatAttachment? = null,
+): ByteArray = if (attachment == null) canonicalBytes {
+        string("syncdroid-chat-v1")
+        string(groupId)
+        string(authorDeviceId)
+        string(body)
+        int64(createdAtMillis)
+    } else canonicalBytes {
+        string("syncdroid-chat-v2")
+        string(groupId)
+        string(authorDeviceId)
+        string(body)
+        int64(createdAtMillis)
+        string(attachment.fileName)
+        string(attachment.mediaType)
+        int64(attachment.sizeBytes)
+        string(attachment.contentSha256)
+        int64(attachment.expiresAtMillis)
+    }
 
 fun sha256(value: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(value)
 

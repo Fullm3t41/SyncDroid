@@ -1,6 +1,6 @@
-# SyncDroid for Android
+# SyncDroid-Mesh for Android
 
-SyncDroid is the Android 10+ peer for the local-Wi-Fi SyncDroid mesh. It includes authenticated discovery and pairing, folder synchronization, resumable transfers, file history, conflict review, registered-Wi-Fi power rules, and signed mesh chat.
+SyncDroid-Mesh is the Android 10+ peer for the local-Wi-Fi mesh. It includes authenticated discovery and pairing, folder synchronization, resumable transfers, file history, conflict review, registered-Wi-Fi power rules, and signed mesh chat.
 
 ## Build and test
 

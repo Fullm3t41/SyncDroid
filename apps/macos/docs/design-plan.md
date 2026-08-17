@@ -4,19 +4,19 @@ Status: Draft for review
 
 Product: SyncTosh
 
-Relationship: Native macOS peer for the SyncDroid mesh
+Relationship: Native macOS peer for SyncDroid-Mesh
 
 ## 1. Product definition
 
-SyncTosh is a self-contained macOS application that provides the same decentralized, local-Wi-Fi file synchronization experience as SyncDroid. It is an equal mesh peer: there is no host, server, master device, or required cloud coordinator.
+SyncTosh is a self-contained macOS application that provides the same decentralized, local-Wi-Fi file synchronization experience as SyncDroid-Mesh. It is an equal mesh peer: there is no host, server, master device, or required cloud coordinator.
 
-The first release should reproduce SyncDroid's current information architecture, visual language, settings, pairing, file management, conflict handling, chat, and sync semantics. macOS-specific additions should support the same experience without turning SyncTosh into a separate product.
+The first release should reproduce SyncDroid-Mesh's current information architecture, visual language, settings, pairing, file management, conflict handling, chat, and sync semantics. macOS-specific additions should support the same experience without turning SyncTosh into a separate product.
 
 ### Confirmed requirements
 
 - Product name: SyncTosh.
 - One self-contained `.app`; no separately installed daemon or Java requirement.
-- Join and participate in existing SyncDroid meshes.
+- Join and participate in existing SyncDroid-Mesh networks.
 - Same five primary sections: Sync, Folders, Devices, Chat, and Settings.
 - Matching light, dark, and follow-system presentation.
 - Matching expandable and collapsible cards.
@@ -89,7 +89,7 @@ The bridge remains embedded inside `SyncTosh.app`; it is not a separately instal
 The recommended long-term layout is a monorepo with shared protocol code:
 
 ```text
-SyncDroid/
+SyncDroid-Mesh/
 ├── shared/
 │   ├── mesh-core/
 │   ├── sync-engine/
@@ -137,7 +137,7 @@ This avoids requiring a disruptive Android protocol migration before the Mac can
 
 ## 5. Visual system
 
-SyncTosh should use the same calm, minimal visual direction as SyncDroid:
+SyncTosh should use the same calm, minimal visual direction as SyncDroid-Mesh:
 
 - Neutral background and surface hierarchy.
 - Generous whitespace.
@@ -191,7 +191,7 @@ Keyboard focus, VoiceOver labels, reduced-motion preferences, and sufficient cli
 
 ### 6.2 Folders
 
-- Expandable folder cards matching SyncDroid.
+- Expandable folder cards matching SyncDroid-Mesh.
 - Add a local folder using the in-app browser.
 - Create a new folder after choosing its parent location.
 - Configure a remotely announced folder using a new or existing local folder.
@@ -331,7 +331,7 @@ Keep Both copies the Mac version to the next free suffixed name, then restores t
 
 ## 10. Menu bar and notifications
 
-The menu-bar item is the macOS equivalent of SyncDroid's ongoing notification.
+The menu-bar item is the macOS equivalent of SyncDroid-Mesh's ongoing notification.
 
 States:
 
@@ -397,7 +397,7 @@ Exit: shared compatibility suite passes independently of Android UI.
 - Self-contained macOS application bundle.
 - Theme, navigation, empty states, cards, and window restoration.
 
-Exit: every primary screen matches the approved SyncDroid visual reference.
+Exit: every primary screen matches the approved SyncDroid-Mesh visual reference.
 
 ### Phase 2 — Local persistence and file access
 
@@ -409,7 +409,7 @@ Exit: folders survive restart and permission renewal safely.
 
 - Bonjour, pinned TLS, start/join mesh, code lockout, and membership replication.
 
-Exit: SyncTosh and SyncDroid can pair in either direction.
+Exit: SyncTosh and SyncDroid-Mesh can pair in either direction.
 
 ### Phase 4 — Whole-file synchronization
 
@@ -467,7 +467,7 @@ Exit: a clean Mac can install, pair, sync, update, and uninstall without externa
 1. Minimum macOS version. Recommendation: macOS 13 Ventura or newer.
 2. Processor support. Recommendation: Apple Silicon first; confirm whether Intel is required for the first release.
 3. Bundle identifier. Proposed placeholder: `com.synctosh.app`.
-4. Repository layout. Recommendation: integrate into the existing SyncDroid repository after the initial UI shell.
+4. Repository layout. Recommendation: integrate into the existing SyncDroid-Mesh repository after the initial UI shell.
 5. Distribution. Confirm access to an Apple Developer account for Developer ID signing and notarization.
 6. Startup behavior. Confirm whether Launch at login should be opt-in or enabled during onboarding.
 

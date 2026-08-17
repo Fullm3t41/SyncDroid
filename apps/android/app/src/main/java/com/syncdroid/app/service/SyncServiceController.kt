@@ -33,7 +33,7 @@ object SyncServiceController {
                 Intent(context.applicationContext, SyncForegroundService::class.java),
             )
         }.onFailure {
-            report(running = false, status = "Open SyncDroid to start background sync")
+            report(running = false, status = "Open SyncDroid-Mesh to start background sync")
         }
     }
 
@@ -45,7 +45,7 @@ object SyncServiceController {
                     .setAction(SyncForegroundService.ACTION_REFRESH),
             )
         }.onFailure {
-            report(running = false, status = "Open SyncDroid to start background sync")
+            report(running = false, status = "Open SyncDroid-Mesh to start background sync")
         }
     }
 
@@ -56,6 +56,18 @@ object SyncServiceController {
                 Intent(context.applicationContext, SyncForegroundService::class.java)
                     .setAction(SyncForegroundService.ACTION_PROPAGATE_MEMBERSHIP)
                     .putExtra(SyncForegroundService.EXTRA_ADDED_DEVICE_ID, addedDeviceId),
+            )
+        }.onFailure {
+            requestRefresh(context)
+        }
+    }
+
+    fun propagateChatChange(context: Context) {
+        runCatching {
+            ContextCompat.startForegroundService(
+                context.applicationContext,
+                Intent(context.applicationContext, SyncForegroundService::class.java)
+                    .setAction(SyncForegroundService.ACTION_PROPAGATE_CHAT),
             )
         }.onFailure {
             requestRefresh(context)

@@ -29,7 +29,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 const val DEFAULT_RELEASE_MANIFEST_URL =
-    "https://github.com/Fullm3t41/SyncDroid/releases/latest/download/syncdroid-update.properties"
+    "https://raw.githubusercontent.com/Fullm3t41/SyncDroid-Mesh/updates/syncdroid-update.properties"
 const val UPDATE_CHECK_INTERVAL_MILLIS = 24L * 60L * 60L * 1_000L
 
 fun interface LastUpdateCheckStore {
@@ -566,7 +566,7 @@ class ReleaseUpdateService(
         connectTimeout = 15_000
         readTimeout = 30_000
         setRequestProperty("Accept", "application/octet-stream")
-        setRequestProperty("User-Agent", "SyncDroid-Updater/$currentVersion")
+        setRequestProperty("User-Agent", "SyncDroid-Mesh-Updater/$currentVersion")
     }
 
     private fun sha256(path: Path): String {

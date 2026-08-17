@@ -14,7 +14,7 @@ class MeshUpdateExchangeTest {
         val descriptor = UpdateAssetDescriptor(
             releaseVersion = "0.2.0",
             platformId = "android",
-            fileName = "SyncDroid-0.2.0-Android.apk",
+            fileName = "SyncDroid-Mesh-0.2.0-Android.apk",
             sha256 = "b".repeat(64),
             sizeBytes = 5,
         )

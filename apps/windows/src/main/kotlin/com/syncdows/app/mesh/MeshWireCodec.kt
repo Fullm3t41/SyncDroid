@@ -39,7 +39,7 @@ private fun MeshStateBundle.toWire() = MeshStateBundleWire(
     chatMessages.map { message ->
         WireChatMessage(
             message.messageId, message.groupId, message.authorDeviceId,
-            message.body, message.createdAtMillis, message.signatureBase64,
+            message.body, message.createdAtMillis, message.signatureBase64, message.attachment,
         )
     },
 )
@@ -64,7 +64,7 @@ private fun MeshStateBundleWire.toDomain() = MeshStateBundle(
     chatMessages.map { message ->
         MeshChatMessage(
             message.messageId, message.groupId, message.authorDeviceId,
-            message.body, message.createdAtMillis, message.signatureBase64,
+            message.body, message.createdAtMillis, message.signatureBase64, message.attachment,
         )
     },
 )

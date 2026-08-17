@@ -79,6 +79,7 @@ class MeshRuntime(
     private val connectionJobs = mutableMapOf<String, Job>()
     private val syncMutex = Mutex()
     private val fileHistory = FileHistoryRepository(store, identity.deviceId)
+    private val chatAttachments = ChatAttachmentStore(store)
     private var expiryJob: Job? = null
     private var backgroundScheduleJob: Job? = null
     @Volatile private var windowForeground = true
@@ -411,8 +412,52 @@ class MeshRuntime(
             val message = MeshChatMessage.create(profile.groupId, body, identity)
             check(store.applyChat(message)) { "This message is already in the mesh" }
             refresh("Message ready to sync")
-            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
+            connectToAvailablePeers(
+                profile,
+                discoveredPeers().values,
+                initiatorOrdering = false,
+                maxFanout = Int.MAX_VALUE,
+            )
         }.onFailure(::report)
+    }
+
+    fun sendChatAttachment(source: Path, body: String = "") =
+        sendChatAttachments(listOf(source), body)
+
+    fun sendChatAttachments(sources: List<Path>, body: String = "") = scope.launch {
+        val profile = store.profile()
+        if (profile == null) {
+            report(IllegalStateException("Join a mesh before sending an attachment"))
+            return@launch
+        }
+        val files = sources.map(Path::toAbsolutePath).map(Path::normalize).distinct()
+        if (files.isEmpty()) return@launch
+        updateBusy("Preparing attachment…")
+        val errors = mutableListOf<Throwable>()
+        var preparedCount = 0
+        files.forEachIndexed { index, source ->
+            runCatching {
+                val createdAtMillis = System.currentTimeMillis() + index
+                val attachment = chatAttachments.describe(source, createdAtMillis)
+                val message = MeshChatMessage.create(profile.groupId, body, identity, createdAtMillis, attachment)
+                chatAttachments.import(message, source)
+                check(store.applyChat(message)) { "This attachment is already in the mesh" }
+                preparedCount++
+            }.onFailure(errors::add)
+        }
+        if (preparedCount > 0) {
+            refresh(if (preparedCount == 1) "Attachment ready to sync" else "$preparedCount attachments ready to sync")
+            connectToAvailablePeers(
+                profile, discoveredPeers().values, initiatorOrdering = false, maxFanout = Int.MAX_VALUE,
+            )
+        }
+        errors.firstOrNull()?.let(::report)
+    }
+
+    fun chatAttachmentPath(messageId: String): Path? {
+        val profile = store.profile() ?: return null
+        val message = store.chatMessage(profile.groupId, messageId) ?: return null
+        return chatAttachments.localPath(message)
     }
 
     fun recoverFile(eventId: String) = scope.launch {
@@ -644,6 +689,7 @@ class MeshRuntime(
         peers: Collection<DiscoveredPeer>,
         initiatorOrdering: Boolean,
         sourcePeerId: String? = null,
+        maxFanout: Int = ROUTING_FANOUT,
     ) {
         if (!discoveryActive) return
         val trustedIds = store.devices(profile.groupId)
@@ -668,7 +714,7 @@ class MeshRuntime(
                         connectionJobs[deviceId]?.isActive == true || deviceId in activeSessions,
                     )
                 },
-                maxFanout = ROUTING_FANOUT,
+                maxFanout = maxFanout,
             )
         }
         targetIds.mapNotNull(available::get).forEach { peer ->

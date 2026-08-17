@@ -1,5 +1,6 @@
 package com.syncdroid.app.mesh
 
+import android.util.Log
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -71,7 +72,10 @@ class MeshPeerServer(
                     runCatching {
                         socket.startHandshake()
                         AuthenticatedPeerConnection(socket, socket.authenticatedPeerIdentity()).use { onConnection(it) }
-                    }.onFailure { runCatching { socket.close() } }
+                    }.onFailure { error ->
+                        Log.e(TAG, "Incoming peer connection failed", error)
+                        runCatching { socket.close() }
+                    }
                 }
             }
         }
@@ -96,3 +100,4 @@ class MeshPeerClient(private val tls: DeviceTlsContext) {
 }
 
 private const val MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+private const val TAG = "SyncDroidMesh"

@@ -1,6 +1,6 @@
 # SyncDows for Windows
 
-SyncDows is the Windows peer in the SyncDroid local-Wi-Fi mesh. It uses the same Compose Desktop interface and interoperable mesh behavior as SyncTosh while storing its state beneath `%LOCALAPPDATA%\SyncDows` and integrating with File Explorer and the Windows system tray.
+SyncDows is the Windows peer in the SyncDroid-Mesh local-Wi-Fi network. It uses the same Compose Desktop interface and interoperable mesh behavior as SyncTosh while storing its state beneath `%LOCALAPPDATA%\SyncDows` and integrating with File Explorer and the Windows system tray.
 
 ## Current implementation
 

@@ -39,7 +39,7 @@ compose.desktop {
             packageName = "SyncTosh"
             // jpackage requires the first bundle-version component to be non-zero.
             packageVersion = "1.2.2"
-            description = "Apple Silicon local-first peer-to-peer folder synchronization for the SyncDroid mesh"
+            description = "Apple Silicon local-first peer-to-peer folder synchronization for SyncDroid-Mesh"
             vendor = "Fullm3t41"
 
             macOS {

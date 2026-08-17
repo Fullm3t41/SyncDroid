@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.ResultSet
+import com.syncdroid.shared.protocol.WireChatAttachment
 import java.sql.Statement
 import java.util.Base64
 import java.util.UUID
@@ -373,9 +374,13 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     @Synchronized
     fun chatMessages(groupId: String, limit: Int = MAX_REPLICATED_CHAT_MESSAGES): List<MeshChatMessage> =
         connection.prepareStatement(
-            """SELECT message_id, group_id, author_device_id, body, created_at_millis, signature
+            """SELECT message_id, group_id, author_device_id, body, created_at_millis, signature,
+                      attachment_file_name, attachment_media_type, attachment_size_bytes,
+                      attachment_sha256, attachment_expires_at_millis
                FROM (
-                 SELECT message_id, group_id, author_device_id, body, created_at_millis, signature
+                 SELECT message_id, group_id, author_device_id, body, created_at_millis, signature,
+                        attachment_file_name, attachment_media_type, attachment_size_bytes,
+                        attachment_sha256, attachment_expires_at_millis
                  FROM chat_messages WHERE group_id = ?
                  ORDER BY created_at_millis DESC, message_id DESC LIMIT ?
                ) ORDER BY created_at_millis, message_id""",
@@ -385,9 +390,19 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                 while (rows.next()) add(MeshChatMessage(
                     rows.getString(1), rows.getString(2), rows.getString(3),
                     rows.getString(4), rows.getLong(5), rows.getString(6),
+                    rows.getString(7)?.let { fileName ->
+                        WireChatAttachment(
+                            fileName, rows.getString(8).orEmpty(), rows.getLong(9),
+                            rows.getString(10), rows.getLong(11),
+                        )
+                    },
                 ))
             } }
         }
+
+    @Synchronized
+    fun chatMessage(groupId: String, messageId: String): MeshChatMessage? =
+        chatMessages(groupId).firstOrNull { it.messageId == messageId }
 
     @Synchronized
     fun membershipEvents(groupId: String): List<MembershipEvent> = connection.prepareStatement(
@@ -1112,9 +1127,10 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         require(message.body.toByteArray(Charsets.UTF_8).size <= MAX_CHAT_BODY_BYTES) {
             "A chat message is too long"
         }
-        require(message.body.isNotBlank() && message.body == message.body.trim()) {
+        require(message.body == message.body.trim() && (message.body.isNotEmpty() || message.attachment != null)) {
             "A chat message has invalid whitespace"
         }
+        message.attachment?.validateForChat(message.createdAtMillis)
         require(message.hasValidMessageId()) { "Chat message ID does not match its payload" }
         val author = device(message.groupId, message.authorDeviceId)
             ?: error("Chat message author is not a member of this mesh")
@@ -1124,12 +1140,22 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         }
         return connection.prepareStatement(
             """INSERT OR IGNORE INTO chat_messages(
-                   message_id, group_id, author_device_id, body, created_at_millis, signature)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+                   message_id, group_id, author_device_id, body, created_at_millis, signature,
+                   attachment_file_name, attachment_media_type, attachment_size_bytes,
+                   attachment_sha256, attachment_expires_at_millis)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         ).use {
             it.setString(1, message.messageId); it.setString(2, message.groupId)
             it.setString(3, message.authorDeviceId); it.setString(4, message.body)
             it.setLong(5, message.createdAtMillis); it.setString(6, message.signatureBase64)
+            it.setString(7, message.attachment?.fileName); it.setString(8, message.attachment?.mediaType)
+            message.attachment?.let { attachment ->
+                it.setLong(9, attachment.sizeBytes); it.setString(10, attachment.contentSha256)
+                it.setLong(11, attachment.expiresAtMillis)
+            } ?: run {
+                it.setNull(9, java.sql.Types.BIGINT); it.setNull(10, java.sql.Types.VARCHAR)
+                it.setNull(11, java.sql.Types.BIGINT)
+            }
             it.executeUpdate() > 0
         }
     }
@@ -1532,7 +1558,10 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                 """CREATE TABLE IF NOT EXISTS chat_messages(
                     message_id TEXT PRIMARY KEY, group_id TEXT NOT NULL,
                     author_device_id TEXT NOT NULL, body TEXT NOT NULL,
-                    created_at_millis INTEGER NOT NULL, signature TEXT NOT NULL)""",
+                    created_at_millis INTEGER NOT NULL, signature TEXT NOT NULL,
+                    attachment_file_name TEXT, attachment_media_type TEXT,
+                    attachment_size_bytes INTEGER, attachment_sha256 TEXT,
+                    attachment_expires_at_millis INTEGER)""",
             )
             statement.executeUpdate(
                 """CREATE TABLE IF NOT EXISTS sync_exception_events(
@@ -1552,9 +1581,17 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_remote_file_versions_sequence ON remote_file_versions(folder_id, device_id, remote_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_created ON file_history(created_at_millis)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_recovery ON file_history(recoverable_until_millis)")
+            val chatColumns = statement.executeQuery("PRAGMA table_info(chat_messages)").use { rows ->
+                buildSet { while (rows.next()) add(rows.getString("name")) }
+            }
+            if ("attachment_file_name" !in chatColumns) statement.executeUpdate("ALTER TABLE chat_messages ADD COLUMN attachment_file_name TEXT")
+            if ("attachment_media_type" !in chatColumns) statement.executeUpdate("ALTER TABLE chat_messages ADD COLUMN attachment_media_type TEXT")
+            if ("attachment_size_bytes" !in chatColumns) statement.executeUpdate("ALTER TABLE chat_messages ADD COLUMN attachment_size_bytes INTEGER")
+            if ("attachment_sha256" !in chatColumns) statement.executeUpdate("ALTER TABLE chat_messages ADD COLUMN attachment_sha256 TEXT")
+            if ("attachment_expires_at_millis" !in chatColumns) statement.executeUpdate("ALTER TABLE chat_messages ADD COLUMN attachment_expires_at_millis INTEGER")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_chat_messages_group ON chat_messages(group_id, created_at_millis, message_id)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_sync_exception_events_group ON sync_exception_events(group_id, created_at_millis, event_id)")
-            statement.executeUpdate("UPDATE schema_info SET version = 7 WHERE version < 7")
+            statement.executeUpdate("UPDATE schema_info SET version = 8 WHERE version < 8")
         }
     }
 

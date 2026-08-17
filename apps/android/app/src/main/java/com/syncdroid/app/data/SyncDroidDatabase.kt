@@ -30,7 +30,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SyncExceptionEventEntity::class,
         FolderKeyEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class SyncDroidDatabase : RoomDatabase() {
@@ -54,6 +54,7 @@ abstract class SyncDroidDatabase : RoomDatabase() {
                 MIGRATION_4_5,
                 MIGRATION_5_6,
                 MIGRATION_6_7,
+                MIGRATION_7_8,
             )
                 .build()
                 .also { instance = it }
@@ -234,6 +235,16 @@ abstract class SyncDroidDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_activity_events_recoverableUntilMillis ON activity_events(recoverableUntilMillis)",
                 )
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN attachmentFileName TEXT")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN attachmentMediaType TEXT")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN attachmentSizeBytes INTEGER")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN attachmentSha256 TEXT")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN attachmentExpiresAtMillis INTEGER")
             }
         }
     }

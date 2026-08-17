@@ -1,6 +1,7 @@
 package com.synctosh.app.mesh
 
 import com.syncdroid.shared.protocol.canonicalChatPayload
+import com.syncdroid.shared.protocol.WireChatAttachment
 import com.syncdroid.shared.protocol.canonicalFolderAnnouncementPayload
 import com.syncdroid.shared.protocol.canonicalMembershipPayload
 import com.syncdroid.shared.protocol.decodeEcPublicKeyBase64
@@ -151,8 +152,9 @@ data class MeshChatMessage(
     val body: String,
     val createdAtMillis: Long,
     val signatureBase64: String,
+    val attachment: WireChatAttachment? = null,
 ) {
-    fun canonicalPayload(): ByteArray = canonicalChatPayload(groupId, authorDeviceId, body, createdAtMillis)
+    fun canonicalPayload(): ByteArray = canonicalChatPayload(groupId, authorDeviceId, body, createdAtMillis, attachment)
 
     fun hasValidMessageId(): Boolean = messageId == eventIdFor(canonicalPayload())
 
@@ -165,13 +167,15 @@ data class MeshChatMessage(
             body: String,
             signer: DeviceSigner,
             createdAtMillis: Long = System.currentTimeMillis(),
+            attachment: WireChatAttachment? = null,
         ): MeshChatMessage {
             val cleanBody = body.trim()
-            require(cleanBody.isNotEmpty()) { "A chat message cannot be empty" }
+            require(cleanBody.isNotEmpty() || attachment != null) { "A chat message cannot be empty" }
             require(cleanBody.toByteArray(StandardCharsets.UTF_8).size <= MAX_CHAT_BODY_BYTES) {
                 "A chat message is too long"
             }
-            val unsigned = MeshChatMessage("", groupId, signer.deviceId, cleanBody, createdAtMillis, "")
+            attachment?.validateForChat(createdAtMillis)
+            val unsigned = MeshChatMessage("", groupId, signer.deviceId, cleanBody, createdAtMillis, "", attachment)
             val payload = unsigned.canonicalPayload()
             return unsigned.copy(
                 messageId = eventIdFor(payload),
@@ -182,3 +186,13 @@ data class MeshChatMessage(
 }
 
 internal const val MAX_CHAT_BODY_BYTES = 4_000
+internal const val CHAT_ATTACHMENT_RETENTION_MILLIS = 30L * 24 * 60 * 60 * 1_000
+private const val MAX_CHAT_ATTACHMENT_BYTES = 100L * 1024 * 1024 * 1024
+
+internal fun WireChatAttachment.validateForChat(createdAtMillis: Long) {
+    require(fileName.isNotBlank() && fileName.length <= 255 && fileName.none { it == '/' || it == '\\' || it == '\u0000' })
+    require(mediaType.length <= 255)
+    require(sizeBytes in 0..MAX_CHAT_ATTACHMENT_BYTES)
+    require(contentSha256.matches(Regex("[0-9a-fA-F]{64}")))
+    require(expiresAtMillis == createdAtMillis + CHAT_ATTACHMENT_RETENTION_MILLIS)
+}

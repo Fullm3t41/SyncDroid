@@ -1,26 +1,26 @@
-# SyncDroid
+# SyncDroid-Mesh
 
 **Private, peer-to-peer folder sync for the devices on your local Wi-Fi.**
 
-SyncDroid connects Android, macOS and Windows devices as an equal-peer mesh. There is no permanent host, central server or required account: any trusted device can discover another device, exchange the latest folder state and relay verified files when both are available on the same local network.
+SyncDroid-Mesh connects Android, macOS and Windows devices as an equal-peer mesh. There is no permanent host, central server or required account: any trusted device can discover another device, exchange the latest folder state and relay verified files when both are available on the same local network.
 
-> SyncDroid is under active development. Use the preview releases with files you can recover elsewhere while cross-platform testing continues.
+> SyncDroid-Mesh is under active development. Use the preview releases with files you can recover elsewhere while cross-platform testing continues.
 
-[Download the latest release](https://github.com/Fullm3t41/SyncDroid/releases/latest)
+[Download the latest release](https://github.com/Fullm3t41/SyncDroid-Mesh/releases/latest)
 
 ## Preview
 
 <table>
   <tr>
-    <td align="center"><strong>SyncDroid · Android</strong></td>
+    <td align="center"><strong>SyncDroid-Mesh · Android</strong></td>
     <td align="center"><strong>SyncTosh · macOS</strong></td>
   </tr>
   <tr>
-    <td align="center"><img src="assets/readme/syncdroid-sync.png" width="300" alt="SyncDroid local mesh sync screen"></td>
+    <td align="center"><img src="assets/readme/syncdroid-sync.png" width="300" alt="SyncDroid-Mesh local mesh sync screen"></td>
     <td align="center"><img src="assets/readme/synctosh-sync.png" width="680" alt="SyncTosh local mesh sync screen"></td>
   </tr>
   <tr>
-    <td align="center"><img src="assets/readme/syncdroid-settings.png" width="300" alt="SyncDroid settings screen"></td>
+    <td align="center"><img src="assets/readme/syncdroid-settings.png" width="300" alt="SyncDroid-Mesh settings screen"></td>
     <td align="center"><img src="assets/readme/synctosh-folders.png" width="680" alt="SyncTosh folder management screen"></td>
   </tr>
 </table>
@@ -45,13 +45,13 @@ SyncDroid connects Android, macOS and Windows devices as an equal-peer mesh. The
 3. **Choose folders** and optional file filters. A newly announced folder appears as **Configure** on other devices so each one can choose its own local location or decline it.
 4. **Meet on local Wi-Fi.** Devices discover one another with local network discovery, authenticate their pinned identities and exchange signed mesh state.
 5. **Transfer only what is needed.** File manifests identify new, changed and deleted content. Downloads are verified before they atomically replace the destination, and received timestamps do not create a false edit loop.
-6. **Review ambiguity instead of guessing.** If causal history cannot prove which concurrent edit is newer, SyncDroid asks the user which version to keep.
+6. **Review ambiguity instead of guessing.** If causal history cannot prove which concurrent edit is newer, SyncDroid-Mesh asks the user which version to keep.
 
 Membership is replicated too. When an authorised device adds or removes a mesh member, that signed change reaches the other trusted devices during later synchronization sessions.
 
 ## Security and privacy
 
-- Synchronization is local-first and does not require a SyncDroid account or hosted coordination service.
+- Synchronization is local-first and does not require a SyncDroid-Mesh account or hosted coordination service.
 - Six-digit pairing uses a transcript-authenticated password-authenticated key exchange rather than sending the code as a reusable password.
 - Trusted sessions use mutually authenticated TLS with pinned device identities.
 - Membership changes, folder announcements, chat messages and overwrite-only exceptions are signed.
@@ -64,12 +64,12 @@ The six-digit code is designed for convenient nearby pairing, not for publishing
 
 | App | Platform | Current status |
 | --- | --- | --- |
-| **SyncDroid** | Android 10 and later | Preview releases available |
+| **SyncDroid-Mesh** | Android 10 and later | Preview releases available |
 | **SyncTosh** | Apple Silicon macOS 13 and later | Preview releases available |
 | **SyncDows** | Windows 10/11 | Native testing in progress |
 | **SyncDeck** | Linux/SteamOS | Planned |
 
-Release downloads are self-contained: SyncDroid is provided as an Android APK, SyncTosh as an Apple Silicon DMG, and SyncDows as a branded Windows EXE. From version 0.2.0 onward, every app checks the signed GitHub release manifest at startup and daily, and can reuse a verified installer cached by a trusted mesh peer.
+Release downloads are self-contained: SyncDroid-Mesh is provided as an Android APK, SyncTosh as an Apple Silicon DMG, and SyncDows as a branded Windows EXE. From version 0.2.0 onward, every app checks the signed GitHub release manifest at startup and daily, and can reuse a verified installer cached by a trusted mesh peer.
 
 ## Current scope
 
@@ -77,6 +77,6 @@ The local peer mesh, file transfer engine, resumable blocks, history, recovery, 
 
 ## Licence
 
-SyncDroid, SyncTosh, SyncDows and the shared protocol/synchronization code are licensed under the [GNU General Public License version 3](LICENSE). Distributed modifications must remain under GPLv3 and include the corresponding source.
+SyncDroid-Mesh, SyncTosh, SyncDows and the shared protocol/synchronization code are licensed under the [GNU General Public License version 3](LICENSE). Distributed modifications must remain under GPLv3 and include the corresponding source.
 
 The application names, logos and icons remain reserved project branding. Forks and independently distributed builds must follow the [trademark policy](TRADEMARKS.md). Third-party components retain their respective licences.

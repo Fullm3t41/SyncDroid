@@ -1,6 +1,6 @@
 # SyncTosh
 
-SyncTosh is the self-contained Apple Silicon macOS peer for the SyncDroid local mesh.
+SyncTosh is the self-contained Apple Silicon macOS peer for the SyncDroid-Mesh network.
 
 The current preview includes the native macOS application, Android-compatible mesh pairing, folder synchronization, resumable transfers, file history, and signed mesh chat. Later parity phases follow [`docs/design-plan.md`](docs/design-plan.md).
 
@@ -11,7 +11,7 @@ Requirements:
 
 At wide window sizes, Sync, Folders, Devices, and Settings automatically reflow into desktop columns. Chat intentionally remains a single conversation column.
 
-The SyncTosh icon is derived from the SyncDroid mesh artwork, with a macOS-inspired multicolour centre to distinguish the desktop app.
+The SyncTosh icon is derived from the SyncDroid-Mesh artwork, with a macOS-inspired multicolour centre to distinguish the desktop app.
 
 ## Implemented mesh foundation
 
@@ -20,7 +20,7 @@ The SyncTosh icon is derived from the SyncDroid mesh artwork, with a macOS-inspi
 - Android-compatible Bonjour and UDP pairing discovery
 - Transcript-authenticated six-digit J-PAKE pairing
 - Five attempts per rolling 15-minute attempt window
-- Android-compatible signed membership and mesh-bundle codecs, including verification of immutable membership-v1 histories created by early SyncDroid builds
+- Android-compatible signed membership and mesh-bundle codecs, including verification of immutable membership-v1 histories created by early SyncDroid-Mesh builds
 - Signed Android folder announcements persisted as per-Mac Configure/Configured/Declined entries
 - Existing-folder selection and new local folder creation for received mesh folders
 - Signed TLS-bound identity proofs and returning-peer synchronization sessions

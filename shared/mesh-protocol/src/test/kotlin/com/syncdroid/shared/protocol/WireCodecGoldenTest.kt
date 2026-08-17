@@ -71,6 +71,7 @@ class WireCodecGoldenTest {
                 "folder-1", "file-1", "save/main.sav", "ab".repeat(32), 4,
             ),
             "transfer.blockResponse" to FileTransferMessage.BlockResponse(4, byteArrayOf(4, 5, 6)),
+            "transfer.attachmentRequest" to FileTransferMessage.AttachmentRequest("chat-1", "ab".repeat(32)),
             "transfer.error" to FileTransferMessage.Error("missing"),
         )
         messages.forEach { (key, message) ->

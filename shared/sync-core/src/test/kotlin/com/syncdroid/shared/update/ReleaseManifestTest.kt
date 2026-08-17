@@ -11,12 +11,12 @@ class ReleaseManifestTest {
         val manifest = ReleaseManifest(
             version = "0.2.0",
             publishedAt = "2026-08-16T12:00:00Z",
-            notesUrl = "https://github.com/Fullm3t41/SyncDroid/releases/tag/v0.2.0",
+            notesUrl = "https://github.com/Fullm3t41/SyncDroid-Mesh/releases/tag/v0.2.0",
             assets = UpdatePlatform.entries.map { platform ->
                 ReleaseAsset(
                     platform,
                     "${platform.id}.bin",
-                    "https://github.com/Fullm3t41/SyncDroid/releases/download/v0.2.0/${platform.id}.bin",
+                    "https://github.com/Fullm3t41/SyncDroid-Mesh/releases/download/v0.2.0/${platform.id}.bin",
                     "a".repeat(64),
                     123L,
                 )

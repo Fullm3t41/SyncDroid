@@ -151,7 +151,7 @@ fun WifiRulesScreen(
                             Text("Background network detection", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Allow location access all the time so Android can reveal the Wi-Fi name while SyncDroid is closed. SyncDroid does not read GPS location.",
+                                "Allow location access all the time so Android can reveal the Wi-Fi name while SyncDroid-Mesh is closed. SyncDroid-Mesh does not read GPS location.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -294,7 +294,7 @@ fun WifiRulesScreen(
             title = { Text("Turn on Location services") },
             text = {
                 Text(
-                    "SyncDroid already has Wi-Fi permission, but Android is hiding the connected network name because Location services are off.",
+                    "SyncDroid-Mesh already has Wi-Fi permission, but Android is hiding the connected network name because Location services are off.",
                 )
             },
             confirmButton = {

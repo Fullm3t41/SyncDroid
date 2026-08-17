@@ -14,7 +14,7 @@ object MacFolderPicker {
             dialogTitle = "Import offline update bundle"
             fileSelectionMode = JFileChooser.FILES_ONLY
             isAcceptAllFileFilterUsed = false
-            fileFilter = FileNameExtensionFilter("SyncDroid offline update (*.sdu)", "sdu")
+            fileFilter = FileNameExtensionFilter("SyncDroid-Mesh offline update (*.sdu)", "sdu")
             currentDirectory = Path.of(System.getProperty("user.home")).toFile()
         }
         return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
@@ -22,6 +22,27 @@ object MacFolderPicker {
         } else {
             null
         }
+    }
+
+    fun chooseChatAttachment(): Path? {
+        val chooser = JFileChooser().apply {
+            dialogTitle = "Attach a file to mesh chat"
+            fileSelectionMode = JFileChooser.FILES_ONLY
+            isAcceptAllFileFilterUsed = true
+            currentDirectory = Path.of(System.getProperty("user.home")).toFile()
+        }
+        return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+            chooser.selectedFile.toPath().toAbsolutePath().normalize()
+        } else null
+    }
+
+    fun openChatAttachment(path: Path) {
+        val file = path.toAbsolutePath().normalize()
+        require(Files.isRegularFile(file)) { "This attachment is no longer available" }
+        require(Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+            "Finder integration is unavailable"
+        }
+        Desktop.getDesktop().open(file.toFile())
     }
 
     fun openInFinder(path: Path) {

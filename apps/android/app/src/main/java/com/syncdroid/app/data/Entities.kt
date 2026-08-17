@@ -76,6 +76,11 @@ data class ChatMessageEntity(
     val body: String,
     val createdAtMillis: Long,
     val signatureBase64: String,
+    val attachmentFileName: String? = null,
+    val attachmentMediaType: String? = null,
+    val attachmentSizeBytes: Long? = null,
+    val attachmentSha256: String? = null,
+    val attachmentExpiresAtMillis: Long? = null,
 )
 
 @Entity(

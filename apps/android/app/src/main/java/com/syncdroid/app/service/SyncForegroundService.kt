@@ -118,6 +118,9 @@ class SyncForegroundService : Service() {
                 if (addedDeviceId.isNullOrBlank()) reconcile(force = true)
                 else runtime?.propagateMembershipChange(addedDeviceId) ?: reconcile(force = true)
             }
+            ACTION_PROPAGATE_CHAT -> {
+                if (runtime?.propagateLocalChatChange() != true) reconcile(force = true)
+            }
             ACTION_REFRESH -> reconcile(force = true)
             else -> reconcile(force = false)
         }
@@ -181,7 +184,7 @@ class SyncForegroundService : Service() {
             when {
                 !permissionGranted -> {
                     clearStorageWarning()
-                    setStatus("Sync paused", "Open SyncDroid and allow nearby Wi-Fi access")
+                    setStatus("Sync paused", "Open SyncDroid-Mesh and allow nearby Wi-Fi access")
                 }
                 !wifiConnection.isWifiConnected -> {
                     clearStorageWarning()
@@ -197,7 +200,7 @@ class SyncForegroundService : Service() {
                 }
                 !ensureLocalMembership(profile) -> {
                     clearStorageWarning()
-                    setStatus("Mesh needs attention", "Open SyncDroid to repair or join the mesh")
+                    setStatus("Mesh needs attention", "Open SyncDroid-Mesh to repair or join the mesh")
                 }
                 else -> {
                     val storageWarning = storageWarningBeforeSync(profile)
@@ -282,7 +285,7 @@ class SyncForegroundService : Service() {
             is MeshRuntimeEvent.DiscoveryActive -> setStatus(
                 "Looking for mesh devices",
                 event.windowEndsAtMillis?.let { "Discovery active until ${formatTime(it)}" }
-                    ?: "Discovery stays active while SyncDroid is open",
+                    ?: "Discovery stays active while SyncDroid-Mesh is open",
             )
             is MeshRuntimeEvent.PresenceChanged -> SyncServiceController.report(
                 onlinePeerIds = event.peerIds,
@@ -312,7 +315,7 @@ class SyncForegroundService : Service() {
                 } else {
                     showActiveSyncStatus()
                 }
-                eventNotifications.showSyncComplete(event.peerName)
+                eventNotifications.showSyncComplete(event.peerId, event.peerName)
                 SyncServiceController.report(syncCompleted = true)
                 runPendingReconcileIfIdle()
             }
@@ -324,7 +327,7 @@ class SyncForegroundService : Service() {
                 } else {
                     showActiveSyncStatus()
                 }
-                eventNotifications.showSyncFailed(event.peerName)
+                eventNotifications.showSyncFailed(event.peerId, event.peerName)
                 runPendingReconcileIfIdle()
             }
             is MeshRuntimeEvent.ChatMessagesReceived -> {
@@ -362,7 +365,7 @@ class SyncForegroundService : Service() {
         when (warning) {
             is StorageSyncWarning.Low -> setStatus(
                 "Low storage · approval required",
-                "${formatStorageBytes(lowestAvailable)} free · open SyncDroid to continue",
+                "${formatStorageBytes(lowestAvailable)} free · open SyncDroid-Mesh to continue",
             )
             is StorageSyncWarning.Full -> setStatus(
                 "Incoming sync paused · storage full",
@@ -395,7 +398,7 @@ class SyncForegroundService : Service() {
         val foregroundDetail = if (
             SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty() &&
             SyncServiceController.snapshot.value.storageWarning == null
-        ) "Discovery stays active while SyncDroid is open" else statusDetail
+        ) "Discovery stays active while SyncDroid-Mesh is open" else statusDetail
         val foregroundTitle = if (
             SyncServiceController.appInForeground.value && runtime != null && activePeers.isEmpty() &&
             SyncServiceController.snapshot.value.storageWarning == null
@@ -428,6 +431,7 @@ class SyncForegroundService : Service() {
     companion object {
         const val ACTION_REFRESH = "com.syncdroid.app.action.REFRESH_BACKGROUND_SYNC"
         const val ACTION_PROPAGATE_MEMBERSHIP = "com.syncdroid.app.action.PROPAGATE_MEMBERSHIP"
+        const val ACTION_PROPAGATE_CHAT = "com.syncdroid.app.action.PROPAGATE_CHAT"
         const val EXTRA_ADDED_DEVICE_ID = "com.syncdroid.app.extra.ADDED_DEVICE_ID"
         const val ACTION_CYCLE_INTERVAL = "com.syncdroid.app.action.CYCLE_DISCOVERY_INTERVAL"
         const val ACTION_CYCLE_WINDOW = "com.syncdroid.app.action.CYCLE_DISCOVERY_WINDOW"

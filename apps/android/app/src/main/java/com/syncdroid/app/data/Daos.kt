@@ -51,6 +51,12 @@ interface ChatDao {
 
     @Query("SELECT * FROM chat_messages WHERE groupId = :groupId ORDER BY createdAtMillis DESC, messageId DESC LIMIT :limit")
     suspend fun recentMessages(groupId: String, limit: Int): List<ChatMessageEntity>
+
+    @Query("SELECT * FROM chat_messages WHERE groupId = :groupId AND messageId = :messageId LIMIT 1")
+    suspend fun getMessage(groupId: String, messageId: String): ChatMessageEntity?
+
+    @Query("SELECT * FROM chat_messages WHERE groupId = :groupId AND attachmentFileName IS NOT NULL ORDER BY createdAtMillis")
+    suspend fun attachmentMessages(groupId: String): List<ChatMessageEntity>
 }
 
 @Dao

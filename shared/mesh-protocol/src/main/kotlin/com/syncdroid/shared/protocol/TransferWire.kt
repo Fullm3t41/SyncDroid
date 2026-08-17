@@ -25,6 +25,10 @@ sealed interface FileTransferMessage {
         val blockIndex: Int,
     ) : FileTransferMessage
     data class BlockResponse(val blockIndex: Int, val data: ByteArray) : FileTransferMessage
+    data class AttachmentRequest(
+        val messageId: String,
+        val contentSha256: String,
+    ) : FileTransferMessage
     data class Error(val reason: String) : FileTransferMessage
 }
 
@@ -68,6 +72,11 @@ object FileTransferWireCodec {
                     output.writeInt(message.blockIndex)
                     output.writeData(message.data)
                 }
+                is FileTransferMessage.AttachmentRequest -> {
+                    output.writeByte(ATTACHMENT_REQUEST)
+                    output.writeString(message.messageId)
+                    output.writeString(message.contentSha256)
+                }
                 is FileTransferMessage.Error -> {
                     output.writeByte(ERROR)
                     output.writeString(message.reason)
@@ -90,6 +99,7 @@ object FileTransferWireCodec {
                 input.readString(), input.readString(), input.readString(), input.readString(), input.readInt(),
             )
             BLOCK_RESPONSE -> FileTransferMessage.BlockResponse(input.readInt(), input.readData())
+            ATTACHMENT_REQUEST -> FileTransferMessage.AttachmentRequest(input.readString(), input.readString())
             ERROR -> FileTransferMessage.Error(input.readString())
             else -> error("Unknown file-transfer message $type")
         }
@@ -113,6 +123,7 @@ object FileTransferWireCodec {
     private const val FILE_END = 4
     private const val BLOCK_REQUEST = 5
     private const val BLOCK_RESPONSE = 6
+    private const val ATTACHMENT_REQUEST = 7
     private const val ERROR = 127
     private const val MAX_DATA_BYTES = 16 * 1024 * 1024
 }
