@@ -184,8 +184,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          public_assets=(
+            "release-assets/SyncDroid-${version}-Android.apk"
+            "release-assets/SyncTosh-${version}-macOS-arm64.dmg"
+            "release-assets/SyncDows-${version}-Windows-x64.exe"
+            "release-assets/SyncDroid-${version}-offline.sdu"
+          )
+          for file in "${public_assets[@]}"; do test -f "$file"; done
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-assets/* \
+            gh release upload "$GITHUB_REF_NAME" "${public_assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release edit "$GITHUB_REF_NAME" \
@@ -195,7 +203,7 @@ jobs:
               --latest \
               --title "SyncDroid ${GITHUB_REF_NAME#v}"
           else
-            gh release create "$GITHUB_REF_NAME" release-assets/* \
+            gh release create "$GITHUB_REF_NAME" "${public_assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --generate-notes \
