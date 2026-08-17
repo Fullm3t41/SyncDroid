@@ -5,6 +5,7 @@ import com.syncdroid.shared.sync.MeshRouteCandidate
 import com.syncdroid.shared.sync.initialMeshFanoutTargets
 import com.syncdroid.shared.sync.propagationFanoutTargets
 import com.syncdroid.shared.update.MeshUpdateCache
+import com.syncdroid.shared.discovery.MeshLanDiscovery
 import com.syncdows.app.model.MeshPeer
 import com.syncdows.app.platform.AppPreferences
 import com.syncdows.app.platform.WindowsWifi
@@ -64,10 +65,14 @@ class MeshRuntime(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lanDiscovery = PairingLanDiscovery(identity.deviceId)
     private val bonjour = BonjourDiscovery(identity.deviceId)
+    private val lanMeshPeers = MutableStateFlow<Map<String, DiscoveredPeer>>(emptyMap())
     private val mutableState = MutableStateFlow(MeshRuntimeState())
     val state: StateFlow<MeshRuntimeState> = mutableState.asStateFlow()
     private var pairingServer: MeshPeerServer? = null
     private var meshServer: MeshPeerServer? = null
+    private var meshLanDiscovery: MeshLanDiscovery? = null
+    private var meshLanCollector: Job? = null
+    private var meshPort: Int? = null
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
     private val automaticallyContactedPeers = ConcurrentHashMap.newKeySet<String>()
     private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
@@ -84,7 +89,9 @@ class MeshRuntime(
         refresh("Ready to connect")
         store.profile()?.let(::startMeshNetworking)
         scope.launch {
-            combine(bonjour.peers, bonjour.pairingOffers, lanDiscovery.offers) { peers, _, _ -> peers }
+            combine(bonjour.peers, lanMeshPeers, bonjour.pairingOffers, lanDiscovery.offers) { peers, fallback, _, _ ->
+                mergeDiscoveredPeers(fallback, peers)
+            }
                 .collectLatest { peers ->
                     refresh(mutableState.value.status)
                     if (!discoveryActive) return@collectLatest
@@ -115,7 +122,7 @@ class MeshRuntime(
                 setDiscoveryActive(true)
                 val profile = store.profile()
                 refresh(if (profile == null) "Ready to connect" else "Discovery active while SyncDows is open")
-                if (profile != null) connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+                if (profile != null) connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
             }
         } else {
             restartBackgroundSchedule()
@@ -272,7 +279,7 @@ class MeshRuntime(
             )
             store.applyMembership(profile.groupName, event)
             refresh("Device name updated across the mesh")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
@@ -297,14 +304,14 @@ class MeshRuntime(
             store.applyMembership(profile.groupName, event)
             connectionJobs.remove(deviceId)?.cancel()
             refresh("${target.displayName} removed from the mesh")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
     fun leaveMesh() = scope.launch {
         val profile = store.profile() ?: return@launch
         val trusted = store.devices(profile.groupId).filter { it.trusted && it.deviceId != identity.deviceId }
-        val peer = bonjour.peers.value.values.firstOrNull { discovered ->
+        val peer = discoveredPeers().values.firstOrNull { discovered ->
             trusted.any { it.deviceId == discovered.deviceId }
         }
         if (peer == null) {
@@ -353,7 +360,7 @@ class MeshRuntime(
         runCatching {
             store.configureFolder(folderId, identity.deviceId, localPath)
             refresh("Folder configured")
-            store.profile()?.let { connectToAvailablePeers(it, bonjour.peers.value.values, initiatorOrdering = false) }
+            store.profile()?.let { connectToAvailablePeers(it, discoveredPeers().values, initiatorOrdering = false) }
         }.onFailure(::report)
     }
 
@@ -382,15 +389,16 @@ class MeshRuntime(
             store.configureFolder(announcement.folderId, identity.deviceId, localPath)
             FileSyncEngine(store, identity, profile).scanConfiguredFolders()
             refresh("Folder added · ready to sync")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
     fun syncNow() = scope.launch {
         val profile = store.profile() ?: return@launch
         updateBusy("Looking for trusted devices…")
-        connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
-        if (bonjour.peers.value.isEmpty()) refresh("No trusted devices are currently online")
+        val discovered = discoveredPeers()
+        connectToAvailablePeers(profile, discovered.values, initiatorOrdering = false)
+        if (discovered.isEmpty()) refresh("No trusted devices are currently online")
     }
 
     fun sendChat(body: String) = scope.launch {
@@ -403,7 +411,7 @@ class MeshRuntime(
             val message = MeshChatMessage.create(profile.groupId, body, identity)
             check(store.applyChat(message)) { "This message is already in the mesh" }
             refresh("Message ready to sync")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
@@ -414,7 +422,7 @@ class MeshRuntime(
             fileHistory.recover(eventId, profile)
             FileSyncEngine(store, identity, profile).scanConfiguredFolders(recordHistory = false)
             refresh("File recovered · ready to sync")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
@@ -424,7 +432,7 @@ class MeshRuntime(
         runCatching {
             store.recordSyncException(folderId, relativePath, active = false, signer = identity)
             refresh("Exception removed · file can sync again")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
@@ -434,7 +442,7 @@ class MeshRuntime(
         runCatching {
             store.resolveConflictKeepLocal(conflictId, identity.deviceId)
             refresh("Conflict resolved · local copy kept")
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
@@ -459,7 +467,7 @@ class MeshRuntime(
                     "Conflict resolution queued · waiting for the source device"
                 },
             )
-            connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
     }
 
@@ -495,6 +503,12 @@ class MeshRuntime(
         require(PairingCompletionCodec.decode(connection.receive()) == PairingCompletionMessage.Ack)
         stopPairingOffer()
         refresh("Paired with ${pairing.remoteIdentity.displayName}")
+        connectToAvailablePeers(
+            profile,
+            discoveredPeers().values,
+            initiatorOrdering = false,
+            sourcePeerId = pairing.remoteIdentity.deviceId,
+        )
     }
 
     private suspend fun joinOffer(offer: PairingOffer, code: String) {
@@ -526,7 +540,7 @@ class MeshRuntime(
 
     private fun refresh(status: String) {
         val profile = store.profile()
-        val discovered = bonjour.peers.value
+        val discovered = discoveredPeers()
         val peers = profile?.let { mesh ->
             store.devices(mesh.groupId)
                 .filter { it.trusted && it.deviceId != identity.deviceId }
@@ -567,7 +581,19 @@ class MeshRuntime(
         }
         val port = server.start()
         meshServer = server
+        meshPort = port
         bonjour.advertiseMesh(port)
+        runCatching { MeshLanDiscovery(identity.deviceId, profile.groupId) }.getOrNull()?.let { lan ->
+            meshLanDiscovery = lan
+            if (discoveryActive) lan.start(port)
+            meshLanCollector = scope.launch {
+                lan.peers.collectLatest { peers ->
+                    lanMeshPeers.value = peers.mapValues { (_, peer) ->
+                        DiscoveredPeer(peer.deviceId, peer.address, peer.port, peer.protocolMajor, peer.lastSeenAtMillis)
+                    }
+                }
+            }
+        }
     }
 
     private fun stopMeshNetworking() {
@@ -575,6 +601,9 @@ class MeshRuntime(
         connectionJobs.clear()
         meshServer?.close()
         meshServer = null
+        meshLanCollector?.cancel(); meshLanCollector = null
+        meshLanDiscovery?.close(); meshLanDiscovery = null; meshPort = null
+        lanMeshPeers.value = emptyMap()
         bonjour.stopMeshAdvertisement()
     }
 
@@ -599,7 +628,7 @@ class MeshRuntime(
                 if (result.appliedChangeCount > 0 || result.metadataChanged) {
                     connectToAvailablePeers(
                         profile,
-                        bonjour.peers.value.values,
+                        discoveredPeers().values,
                         initiatorOrdering = false,
                         sourcePeerId = remoteId,
                     )
@@ -656,6 +685,8 @@ class MeshRuntime(
 
     private fun reportSessionFailure(peerId: String, error: Throwable) {
         activeSessions.remove(peerId)
+        automaticallyContactedPeers.remove(peerId)
+        connectionJobs.remove(peerId)
         mutableState.value = mutableState.value.copy(
             status = "Waiting for trusted peers",
             error = error.message?.takeIf { it.isNotBlank() },
@@ -697,6 +728,18 @@ class MeshRuntime(
                     delay(5_000)
                     continue
                 }
+                if (preferences.alwaysOnDiscovery) {
+                    setDiscoveryActive(true)
+                    refresh("Background discovery always on")
+                    store.profile()?.let { profile ->
+                        connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
+                    }
+                    while (
+                        isActive && !windowForeground && preferences.alwaysOnDiscovery &&
+                        backgroundWifiAllowed(WindowsWifi.currentSsid())
+                    ) delay(1_000)
+                    continue
+                }
                 val now = LocalDateTime.now()
                 val window = currentOrNextDiscoveryWindow(
                     now,
@@ -720,7 +763,7 @@ class MeshRuntime(
                 setDiscoveryActive(true)
                 refresh("Background discovery window open")
                 store.profile()?.let { profile ->
-                    connectToAvailablePeers(profile, bonjour.peers.value.values, initiatorOrdering = false)
+                    connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
                 }
                 val remaining = endMillis - System.currentTimeMillis()
                 if (remaining > 0) delay(remaining)
@@ -737,9 +780,12 @@ class MeshRuntime(
         ) delay(500)
     }
 
+    private fun discoveredPeers(): Map<String, DiscoveredPeer> =
+        mergeDiscoveredPeers(lanMeshPeers.value, bonjour.peers.value)
+
     private fun backgroundWifiAllowed(currentWifi: String?): Boolean {
         val registered = preferences.registeredWifiNames
-        return registered.isEmpty() || currentWifi in registered
+        return currentWifi != null && currentWifi in registered
     }
 
     private fun setDiscoveryActive(active: Boolean) {
@@ -747,11 +793,14 @@ class MeshRuntime(
         discoveryActive = active
         if (active) automaticallyContactedPeers.clear()
         bonjour.setMeshEnabled(active)
+        if (active) meshPort?.let { meshLanDiscovery?.start(it) } else meshLanDiscovery?.stop()
     }
 
     override fun close() {
         backgroundScheduleJob?.cancel(); backgroundScheduleJob = null
         stopPairingOffer(); meshServer?.close(); meshServer = null
+        meshLanCollector?.cancel(); meshLanCollector = null
+        meshLanDiscovery?.close(); meshLanDiscovery = null; meshPort = null
         connectionJobs.values.forEach(Job::cancel); connectionJobs.clear()
         lanDiscovery.close(); bonjour.close(); store.close(); scope.cancel()
     }
@@ -759,6 +808,13 @@ class MeshRuntime(
 
 private const val ROUTING_FANOUT = 2
 private const val ROUTING_SETTLE_MILLIS = 750L
+
+private fun mergeDiscoveredPeers(
+    fallback: Map<String, DiscoveredPeer>,
+    bonjour: Map<String, DiscoveredPeer>,
+): Map<String, DiscoveredPeer> = (fallback.keys + bonjour.keys).associateWith { deviceId ->
+    listOfNotNull(fallback[deviceId], bonjour[deviceId]).maxBy(DiscoveredPeer::lastSeenAtMillis)
+}
 
 private data class PairingCodeOffer(
     val code: String,

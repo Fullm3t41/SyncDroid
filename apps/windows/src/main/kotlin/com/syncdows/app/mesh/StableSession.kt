@@ -5,6 +5,8 @@ import com.syncdows.app.platform.WindowsAppPaths
 import com.syncdroid.shared.protocol.FileTransferMessage
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.verifyEcdsaSha256
+import com.syncdroid.shared.sync.ActiveTransferClaims
+import com.syncdroid.shared.sync.activeTransferKey
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.security.SecureRandom
@@ -91,7 +93,16 @@ class MeshFileSyncSession(
         val remoteCatalog = connection.receiveSession<MeshSessionMessage.Catalog>().folders
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(engine.buildUpdatesForPeer(remoteCatalog))))
         val remoteUpdates = connection.receiveSession<MeshSessionMessage.IndexBatch>().updates
-        val plans = engine.receiveIndexes(remoteDeviceId, remoteUpdates)
+        val candidatePlans = engine.receiveIndexes(remoteDeviceId, remoteUpdates)
+        val transferClaims = ActiveTransferClaims.claim(
+            candidatePlans.filter { it.action == FileSyncAction.DownloadRemote && !it.remote.deleted }
+                .map(FileSyncPlan::transferClaimKey),
+        )
+        try {
+        val plans = candidatePlans.filter { plan ->
+            plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted ||
+                transferClaims.owns(plan.transferClaimKey())
+        }
         val prepared = plans.map { plan ->
             val root = engine.configuredRoot(plan.remote.folderId)
             val manifest = plan.remoteManifest?.copy(relativePath = plan.relativePath).takeIf {
@@ -134,6 +145,9 @@ class MeshFileSyncSession(
             }.onFailure { if (it is CancellationException) throw it }
         }
         return MeshFileSyncResult(appliedChangeCount, metadataChanged)
+        } finally {
+            transferClaims.close()
+        }
     }
 
     private suspend fun downloadPhase(
@@ -233,6 +247,9 @@ class MeshFileSyncSession(
         val requestCount: Int,
     )
 }
+
+private fun FileSyncPlan.transferClaimKey(): String =
+    activeTransferKey(remote.folderId, remote.fileId, remote.contentSha256)
 
 data class MeshFileSyncResult(
     val appliedChangeCount: Int,

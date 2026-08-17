@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.syncdows"
-version = "0.2.1"
+version = "0.2.2"
 
 kotlin {
     jvmToolchain(17)
@@ -44,7 +44,7 @@ compose.desktop {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = "SyncDows"
             // jpackage requires a non-zero first component even while the product is pre-1.0.
-            packageVersion = "1.2.1"
+            packageVersion = "1.2.2"
             description = "SyncDows Background Sync"
             vendor = "Fullm3t41"
 

@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.synctosh"
-version = "0.2.1"
+version = "0.2.2"
 
 kotlin {
     jvmToolchain(17)
@@ -38,7 +38,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg)
             packageName = "SyncTosh"
             // jpackage requires the first bundle-version component to be non-zero.
-            packageVersion = "1.2.1"
+            packageVersion = "1.2.2"
             description = "Apple Silicon local-first peer-to-peer folder synchronization for the SyncDroid mesh"
             vendor = "Fullm3t41"
 
@@ -51,6 +51,8 @@ compose.desktop {
                     extraKeysRawXml = """
                         <key>NSLocalNetworkUsageDescription</key>
                         <string>SyncTosh discovers trusted devices and synchronizes files directly over your local Wi-Fi network.</string>
+                        <key>NSLocationWhenInUseUsageDescription</key>
+                        <string>SyncTosh uses the current Wi-Fi network name so you can approve it for background synchronization.</string>
                         <key>NSBonjourServices</key>
                         <array>
                             <string>_syncdroid._tcp</string>

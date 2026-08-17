@@ -13,6 +13,7 @@ data class SyncServiceSnapshot(
     val running: Boolean = false,
     val status: String = "Starting background sync",
     val activePeerIds: Set<String> = emptySet(),
+    val onlinePeerIds: Set<String> = emptySet(),
     val syncRevision: Int = 0,
     val policyRevision: Int = 0,
     val storageWarning: StorageSyncWarning? = null,
@@ -48,6 +49,19 @@ object SyncServiceController {
         }
     }
 
+    fun propagateMembershipChange(context: Context, addedDeviceId: String) {
+        runCatching {
+            ContextCompat.startForegroundService(
+                context.applicationContext,
+                Intent(context.applicationContext, SyncForegroundService::class.java)
+                    .setAction(SyncForegroundService.ACTION_PROPAGATE_MEMBERSHIP)
+                    .putExtra(SyncForegroundService.EXTRA_ADDED_DEVICE_ID, addedDeviceId),
+            )
+        }.onFailure {
+            requestRefresh(context)
+        }
+    }
+
     fun approveLowStorageSync(context: Context, warning: StorageSyncWarning.Low) {
         LowStorageApprovalStore(context).approve(
             warning.destinations.mapTo(mutableSetOf()) { it.destinationKey },
@@ -64,6 +78,7 @@ object SyncServiceController {
         running: Boolean = mutableSnapshot.value.running,
         status: String = mutableSnapshot.value.status,
         activePeerIds: Set<String> = mutableSnapshot.value.activePeerIds,
+        onlinePeerIds: Set<String> = mutableSnapshot.value.onlinePeerIds,
         syncCompleted: Boolean = false,
         policyChanged: Boolean = false,
         storageWarning: StorageSyncWarning? = mutableSnapshot.value.storageWarning,
@@ -73,6 +88,7 @@ object SyncServiceController {
             running = running,
             status = status,
             activePeerIds = activePeerIds,
+            onlinePeerIds = onlinePeerIds,
             syncRevision = current.syncRevision + if (syncCompleted) 1 else 0,
             policyRevision = current.policyRevision + if (policyChanged) 1 else 0,
             storageWarning = storageWarning,

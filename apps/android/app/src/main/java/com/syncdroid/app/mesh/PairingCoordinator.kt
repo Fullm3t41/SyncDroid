@@ -21,6 +21,7 @@ class PairingCoordinator(
     private val database: SyncDroidDatabase,
     private val identity: AndroidDeviceIdentity,
     private val profileStore: LocalMeshProfileStore,
+    private val onMembershipAdded: (String) -> Unit = {},
 ) : AutoCloseable {
     private val appContext = context.applicationContext
     private val browser = PairingNsd(appContext, identity.deviceId)
@@ -55,6 +56,7 @@ class PairingCoordinator(
             val completion = createCompletion(profile, result)
             connection.send(PairingCompletionCodec.encode(completion))
             require(PairingCompletionCodec.decode(connection.receive()) is PairingCompletionMessage.Ack)
+            onMembershipAdded(result.remoteIdentity.deviceId)
             mutableStatus.value = "Paired with ${result.remoteIdentity.displayName}"
         }
         val port = server.start()

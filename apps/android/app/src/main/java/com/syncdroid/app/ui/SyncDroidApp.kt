@@ -118,6 +118,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
@@ -152,8 +153,6 @@ import com.syncdroid.app.mesh.MembershipEvent
 import com.syncdroid.app.mesh.MeshFolderRepository
 import com.syncdroid.app.mesh.MeshChatRepository
 import com.syncdroid.app.mesh.MeshMembershipRepository
-import com.syncdroid.app.mesh.MeshNsdDiscovery
-import com.syncdroid.app.mesh.MeshWifiPresence
 import com.syncdroid.app.mesh.PairingCodeOffer
 import com.syncdroid.app.mesh.PairingCodes
 import com.syncdroid.app.mesh.PairingCoordinator
@@ -201,7 +200,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -272,6 +270,7 @@ fun SyncDroidApp() {
     var dismissedStorageWarningKey by rememberSaveable { mutableStateOf<String?>(null) }
     val appInForeground by SyncServiceController.appInForeground.collectAsState()
     val activeSyncPeerIds = syncServiceSnapshot.activePeerIds
+    val onlinePeerIds = syncServiceSnapshot.onlinePeerIds
     val lastSuccessfulSyncMillis = remember(syncStatusStore, syncServiceSnapshot.syncRevision) {
         syncStatusStore.lastSuccessfulSyncMillis()
     }
@@ -393,7 +392,7 @@ fun SyncDroidApp() {
     val peerDevices = meshDevices
         .filter { it.deviceId != identity.deviceId && it.trustState == "TRUSTED" }
         .map { device ->
-            val online = device.lastSeenAtMillis?.let { System.currentTimeMillis() - it < ONLINE_WINDOW_MILLIS } == true
+            val online = device.deviceId in onlinePeerIds || device.deviceId in activeSyncPeerIds
             PeerDevice(
                 deviceId = device.deviceId,
                 name = device.displayName,
@@ -405,49 +404,16 @@ fun SyncDroidApp() {
         }
     val currentWifiSsid = wifiConnection.ssid.takeIf { wifiConnection.isWifiConnected }
     val wifiAlreadyApproved = wifiPolicy.allowsSync(wifiConnection.isWifiConnected, currentWifiSsid)
-    val nearbyPresencePeerIds by produceState(
-        initialValue = emptySet(),
-        appInForeground,
-        wifiConnection.isWifiConnected,
-        currentWifiSsid,
-        wifiAlreadyApproved,
-        meshProfile.groupId,
-        identity.deviceId,
-    ) {
-        if (!appInForeground || !wifiConnection.isWifiConnected || currentWifiSsid == null || wifiAlreadyApproved) {
-            value = emptySet()
-            return@produceState
-        }
-        val presence = MeshWifiPresence(context, identity.deviceId, meshProfile.groupId)
-        val regularMeshBrowser = MeshNsdDiscovery(context, identity.deviceId, advertise = false)
-        try {
-            presence.start()
-            regularMeshBrowser.start()
-        } catch (_: Throwable) {
-            presence.close()
-            regularMeshBrowser.close()
-            value = emptySet()
-            return@produceState
-        }
-        try {
-            combine(presence.peerIds, regularMeshBrowser.peers) { presenceIds, regularPeers ->
-                presenceIds + regularPeers.keys
-            }.collect { value = it }
-        } finally {
-            presence.close()
-            regularMeshBrowser.close()
-        }
-    }
     val trustedDeviceIds = meshDevices
         .asSequence()
         .filter { it.deviceId != identity.deviceId && it.trustState == "TRUSTED" }
         .map { it.deviceId }
         .toSet()
-    val sameMeshPeerPresent = nearbyPresencePeerIds.any(trustedDeviceIds::contains)
+    val joinedMeshHasOtherDevices = trustedDeviceIds.isNotEmpty()
     val showWifiSuggestion = appInForeground &&
         currentWifiSsid != null &&
         !wifiAlreadyApproved &&
-        sameMeshPeerPresent &&
+        joinedMeshHasOtherDevices &&
         dismissedWifiSuggestionSsid != currentWifiSsid
 
     LaunchedEffect(wifiConnection.isWifiConnected, currentWifiSsid) {
@@ -533,7 +499,15 @@ fun SyncDroidApp() {
             pairingStatus = meshIdentityError
             return@LaunchedEffect
         }
-        val coordinator = PairingCoordinator(context, database, identity, meshProfileStore)
+        val coordinator = PairingCoordinator(
+            context,
+            database,
+            identity,
+            meshProfileStore,
+            onMembershipAdded = { addedDeviceId ->
+                SyncServiceController.propagateMembershipChange(context, addedDeviceId)
+            },
+        )
         pairingCoordinator = coordinator
         try {
             coordinator.offer(offer, meshProfile)
@@ -2942,11 +2916,11 @@ private fun PowerSettingsScreen(
                 SettingsCard {
                     SettingsSwitchRow(
                         icon = Icons.Rounded.BatterySaver,
-                        title = "Scheduled discovery",
-                        detail = "Wake briefly to look for local peers",
-                        checked = discoveryPolicy.scheduledDiscoveryEnabled,
+                        title = "Always-on discovery",
+                        detail = "Keep looking for peers 24/7, ideal for plugged-in devices",
+                        checked = discoveryPolicy.alwaysOnDiscovery,
                         onCheckedChange = {
-                            onDiscoveryPolicyChanged(discoveryPolicy.copy(scheduledDiscoveryEnabled = it))
+                            onDiscoveryPolicyChanged(discoveryPolicy.copy(scheduledDiscoveryEnabled = !it))
                         },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
@@ -2961,13 +2935,17 @@ private fun PowerSettingsScreen(
             item {
                 SectionLabel("DISCOVERY INTERVAL")
                 Spacer(Modifier.height(8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.alpha(if (discoveryPolicy.alwaysOnDiscovery) 0.38f else 1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     DiscoveryPolicy.SUPPORTED_INTERVALS.sorted().chunked(4).forEach { intervalRow ->
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             intervalRow.forEach { minutes ->
                                 IntervalButton(
                                     minutes = minutes,
                                     selected = interval == minutes,
+                                    enabled = !discoveryPolicy.alwaysOnDiscovery,
                                     onClick = {
                                         onDiscoveryPolicyChanged(
                                             discoveryPolicy.copy(intervalMinutes = minutes, windowSecondsOverride = null),
@@ -2983,11 +2961,15 @@ private fun PowerSettingsScreen(
             item {
                 SectionLabel("DISCOVERY WINDOW")
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(30L, 60L, 120L, 300L).forEach { seconds ->
+                Row(
+                    modifier = Modifier.alpha(if (discoveryPolicy.alwaysOnDiscovery) 0.38f else 1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    DiscoveryPolicy.SUPPORTED_WINDOWS_SECONDS.sorted().forEach { seconds ->
                         WindowButton(
                             seconds = seconds,
                             selected = discoveryPolicy.windowSeconds == seconds,
+                            enabled = !discoveryPolicy.alwaysOnDiscovery,
                             onClick = {
                                 onDiscoveryPolicyChanged(discoveryPolicy.copy(windowSecondsOverride = seconds))
                             },
@@ -2998,14 +2980,18 @@ private fun PowerSettingsScreen(
             }
             item {
                 SettingsCard {
-                    SettingsInfoRow(Icons.Rounded.Schedule, "Rendezvous starts", windows.first().startLabel(showWindowDates))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-                    SettingsInfoRow(Icons.Rounded.Schedule, "Following ping", windows[1].startLabel(showWindowDates))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-                    SettingsInfoRow(Icons.Rounded.Sync, "Discovery window", windowDuration)
+                    if (discoveryPolicy.alwaysOnDiscovery) {
+                        SettingsInfoRow(Icons.Rounded.Sync, "Discovery status", "Always active in the background")
+                    } else {
+                        SettingsInfoRow(Icons.Rounded.Schedule, "Rendezvous starts", windows.first().startLabel(showWindowDates))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                        SettingsInfoRow(Icons.Rounded.Schedule, "Following ping", windows[1].startLabel(showWindowDates))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                        SettingsInfoRow(Icons.Rounded.Sync, "Discovery window", windowDuration)
+                    }
                 }
             }
-            item {
+            if (!discoveryPolicy.alwaysOnDiscovery) item {
                 SectionLabel("UPCOMING WINDOWS")
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3047,7 +3033,11 @@ private fun PowerSettingsScreen(
                         Icon(Icons.Rounded.Info, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(Modifier.width(11.dp))
                         Text(
-                            "Rendezvous times share a midnight-based calendar on every device. The 48-hour cadence runs on alternating midnights and the weekly cadence runs Monday at 00:00. Five-minute discovery defaults to a 30-second window; all other intervals default to five minutes. Your selected window is $windowDuration.",
+                            if (discoveryPolicy.alwaysOnDiscovery) {
+                                "Discovery stays available continuously, including while SyncDroid is in the background. This uses more power and is best suited to plugged-in devices. Your scheduled settings are preserved for later."
+                            } else {
+                                "Rendezvous times share a midnight-based calendar on every device. The 48-hour cadence runs on alternating midnights and the weekly cadence runs Monday at 00:00. Fresh installs check every three hours, and discovery windows can remain open for 5, 10 or 15 minutes. Your selected window is $windowDuration."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
@@ -3060,9 +3050,15 @@ private fun PowerSettingsScreen(
 }
 
 @Composable
-private fun IntervalButton(minutes: Int, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun IntervalButton(
+    minutes: Int,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier.clickable(enabled = enabled, onClick = onClick),
         color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
         contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(14.dp),
@@ -3085,9 +3081,15 @@ private fun intervalButtonLabel(minutes: Int): String = when {
 }
 
 @Composable
-private fun WindowButton(seconds: Long, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun WindowButton(
+    seconds: Long,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier.clickable(enabled = enabled, onClick = onClick),
         color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
         contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(14.dp),
@@ -3261,5 +3263,4 @@ private fun String.initials(): String = trim()
     .joinToString("") { it.take(1).uppercase() }
     .ifBlank { "?" }
 
-private const val ONLINE_WINDOW_MILLIS = 5 * 60 * 1000L
 private const val LEAVE_MESH_ANNOUNCEMENT_TIMEOUT_MILLIS = 30_000L

@@ -51,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -64,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.AnnotatedString
@@ -448,14 +450,14 @@ fun DevicesScreen(
                         LocalMeshView(deviceName, peers, onRenameDevice, Modifier.weight(1.25f))
                         Column(Modifier.weight(0.9f), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             DeviceActions(onStartMesh, onJoinMesh, hasMesh)
-                            EmptyStateCard("No trusted peers", "Start a mesh here or enter a six-digit code from an existing device.")
+                            TrustedDeviceList(peers)
                         }
                     }
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         LocalMeshView(deviceName, peers, onRenameDevice)
                         DeviceActions(onStartMesh, onJoinMesh, hasMesh)
-                        EmptyStateCard("No trusted peers", "Start a mesh here or enter a six-digit code from an existing device.")
+                        TrustedDeviceList(peers)
                     }
                 }
             }
@@ -473,6 +475,44 @@ private fun DeviceActions(onStartMesh: () -> Unit, onJoinMesh: () -> Unit, hasMe
         }
         OutlinedButton(onClick = onJoinMesh, enabled = !hasMesh, modifier = Modifier.weight(1f)) {
             Text("Join with code")
+        }
+    }
+}
+
+@Composable
+private fun TrustedDeviceList(peers: List<MeshPeer>) {
+    if (peers.isEmpty()) {
+        EmptyStateCard("No trusted peers", "Start a mesh here or enter a six-digit code from an existing device.")
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Text("Mesh members", style = MaterialTheme.typography.titleMedium)
+        peers.sortedBy { it.name.lowercase() }.forEach { peer ->
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        modifier = Modifier.size(10.dp),
+                        shape = androidx.compose.foundation.shape.CircleShape,
+                        color = if (peer.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    ) {}
+                    Spacer(Modifier.width(11.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(peer.name, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (peer.online) "Online"
+                            else peer.lastOnlineAtMillis?.let { "Last online ${formatHistoryTime(it)}" } ?: "Offline",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -965,8 +1005,14 @@ private fun formatFileSize(bytes: Long): String = when {
 fun PowerDiscoveryScreen(
     intervalMinutes: Int,
     windowSeconds: Long,
+    alwaysOnDiscovery: Boolean,
+    currentWifiName: String?,
+    registeredWifiNames: Set<String>,
     onIntervalChanged: (Int) -> Unit,
     onWindowChanged: (Long) -> Unit,
+    onAlwaysOnChanged: (Boolean) -> Unit,
+    onRegisterCurrentWifi: () -> Unit,
+    onRemoveRegisteredWifi: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val scheduleNow = LocalDateTime.now()
@@ -997,15 +1043,71 @@ fun PowerDiscoveryScreen(
                 )
             }
             item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Always-on discovery", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Keep looking for peers 24/7, ideal for plugged-in Macs",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = alwaysOnDiscovery, onCheckedChange = onAlwaysOnChanged)
+                    }
+                }
+            }
+            item {
+                SectionLabel("REGISTERED WI-FI")
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            currentWifiName?.let { "Connected to $it" } ?: "No Wi-Fi network detected",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        OutlinedButton(
+                            onClick = onRegisterCurrentWifi,
+                            enabled = currentWifiName != null && currentWifiName !in registeredWifiNames,
+                        ) {
+                            Icon(Icons.Rounded.Wifi, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (currentWifiName != null && currentWifiName in registeredWifiNames) "Current network registered" else "Add current network")
+                        }
+                        registeredWifiNames.sorted().forEach { network ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(network, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                                IconButton(onClick = { onRemoveRegisteredWifi(network) }) {
+                                    Icon(Icons.Rounded.Delete, contentDescription = "Remove $network", tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            item {
                 SectionLabel("DISCOVERY INTERVAL")
                 Spacer(Modifier.height(8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.alpha(if (alwaysOnDiscovery) 0.38f else 1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     SUPPORTED_DISCOVERY_INTERVALS.chunked(4).forEach { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { minutes ->
                                 SelectablePill(
                                     label = discoveryIntervalLabel(minutes, compact = true),
                                     selected = minutes == intervalMinutes,
+                                    enabled = !alwaysOnDiscovery,
                                     onClick = { onIntervalChanged(minutes) },
                                     modifier = Modifier.weight(1f),
                                 )
@@ -1017,18 +1119,22 @@ fun PowerDiscoveryScreen(
             item {
                 SectionLabel("DISCOVERY WINDOW")
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.alpha(if (alwaysOnDiscovery) 0.38f else 1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     SUPPORTED_DISCOVERY_WINDOWS.forEach { seconds ->
                         SelectablePill(
                             label = if (seconds < 60) "${seconds}s" else "${seconds / 60} min",
                             selected = seconds == windowSeconds,
+                            enabled = !alwaysOnDiscovery,
                             onClick = { onWindowChanged(seconds) },
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
             }
-            item {
+            if (!alwaysOnDiscovery) item {
                 SectionLabel("UPCOMING WINDOWS")
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1072,7 +1178,11 @@ fun PowerDiscoveryScreen(
                         Icon(Icons.Rounded.Schedule, contentDescription = null)
                         Spacer(Modifier.width(11.dp))
                         Text(
-                            "All devices use the same midnight-based schedule. In the foreground, discovery remains continuously available on connected Wi-Fi.",
+                            if (alwaysOnDiscovery) {
+                                "Discovery remains continuously active in the background. This uses more power, while the scheduled interval and window remain saved for later."
+                            } else {
+                                "All devices use the same midnight-based schedule. Fresh installs check every three hours with a five-minute window. In the foreground, discovery remains continuously available on connected Wi-Fi."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }

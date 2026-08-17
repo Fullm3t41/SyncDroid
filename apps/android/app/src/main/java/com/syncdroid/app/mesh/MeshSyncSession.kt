@@ -33,6 +33,8 @@ import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.WholeFilePeerClient
 import com.syncdroid.shared.protocol.FileTransferMessage
 import com.syncdroid.shared.protocol.MeshSessionMessage
+import com.syncdroid.shared.sync.ActiveTransferClaims
+import com.syncdroid.shared.sync.activeTransferKey
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.io.File
@@ -82,9 +84,17 @@ class MeshSyncSession(
             remoteDeviceId,
             syncDao.enabledFolders(groupId).map { it.folderId },
         ).filterNot { it.planKey() in receivedKeys }
-        val plans = (receivedPlans + pendingPlans)
+        val candidatePlans = (receivedPlans + pendingPlans)
             .sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
-
+        val transferClaims = ActiveTransferClaims.claim(
+            candidatePlans.filter { it.action == FileSyncAction.DownloadRemote && !it.remote.deleted }
+                .map(FileSyncPlan::transferClaimKey),
+        )
+        try {
+        val plans = candidatePlans.filter { plan ->
+            plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted ||
+                transferClaims.owns(plan.transferClaimKey())
+        }
         val prepared = prepareDownloads(plans)
         val localRequestCount = prepared.sumOf(PreparedDownload::requestCount)
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequestCount)))
@@ -121,6 +131,9 @@ class MeshSyncSession(
             appliedChangeCount = downloadResult.appliedChangeCount,
             replicatedStateChanged = receiveResult.replicatedStateChanged,
         )
+        } finally {
+            transferClaims.close()
+        }
     }
 
     private suspend fun exchangeMetadata(connection: AuthenticatedPeerConnection): MeshReceiveResult {
@@ -420,6 +433,9 @@ class MeshSyncSession(
         const val RESUMABLE_THRESHOLD_BYTES = 1024 * 1024L
     }
 }
+
+private fun FileSyncPlan.transferClaimKey(): String =
+    activeTransferKey(remote.folderId, remote.fileId, remote.contentSha256)
 
 private fun FileSyncPlan.planKey(): String =
     "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"

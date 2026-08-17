@@ -53,6 +53,7 @@ fun main() = application {
     var windowVisible by remember { mutableStateOf(true) }
     var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
     var discoveryWindow by remember { mutableLongStateOf(preferences.discoveryWindowSeconds) }
+    var alwaysOnDiscovery by remember { mutableStateOf(preferences.alwaysOnDiscovery) }
     val windowState = rememberWindowState(
         position = WindowPosition.Aligned(androidx.compose.ui.Alignment.Center),
         width = preferences.windowWidth.dp,
@@ -88,6 +89,12 @@ fun main() = application {
         meshRuntime.discoveryScheduleChanged()
     }
 
+    fun updateAlwaysOnDiscovery(enabled: Boolean) {
+        alwaysOnDiscovery = enabled
+        preferences.alwaysOnDiscovery = enabled
+        meshRuntime.discoveryScheduleChanged()
+    }
+
     Tray(
         icon = appIcon,
         tooltip = "SyncTosh · ${meshState.status}",
@@ -118,7 +125,14 @@ fun main() = application {
                     }
             }
             Separator()
-            Menu("Sync interval · ${discoveryIntervalLabel(discoveryInterval)}") {
+            Item(
+                text = selectionLabel(alwaysOnDiscovery, "Always-on discovery"),
+                onClick = { updateAlwaysOnDiscovery(!alwaysOnDiscovery) },
+            )
+            Menu(
+                text = "Sync interval · ${discoveryIntervalLabel(discoveryInterval)}",
+                enabled = !alwaysOnDiscovery,
+            ) {
                 SUPPORTED_DISCOVERY_INTERVALS.forEach { minutes ->
                     Item(
                         text = selectionLabel(discoveryInterval == minutes, discoveryIntervalLabel(minutes)),
@@ -126,7 +140,10 @@ fun main() = application {
                     )
                 }
             }
-            Menu("Discovery duration · ${discoveryWindowLabel(discoveryWindow)}") {
+            Menu(
+                text = "Discovery duration · ${discoveryWindowLabel(discoveryWindow)}",
+                enabled = !alwaysOnDiscovery,
+            ) {
                 SUPPORTED_DISCOVERY_WINDOWS.forEach { seconds ->
                     Item(
                         text = selectionLabel(discoveryWindow == seconds, discoveryWindowLabel(seconds)),
@@ -155,8 +172,10 @@ fun main() = application {
                 runtime = meshRuntime,
                 discoveryInterval = discoveryInterval,
                 discoveryWindow = discoveryWindow,
+                alwaysOnDiscovery = alwaysOnDiscovery,
                 onDiscoveryIntervalChanged = ::updateDiscoveryInterval,
                 onDiscoveryWindowChanged = ::updateDiscoveryWindow,
+                onAlwaysOnDiscoveryChanged = ::updateAlwaysOnDiscovery,
                 onCloseToNotificationBar = ::closeToNotificationBar,
                 updateService = updateService,
                 onInstallUpdate = MacUpdateInstaller::open,

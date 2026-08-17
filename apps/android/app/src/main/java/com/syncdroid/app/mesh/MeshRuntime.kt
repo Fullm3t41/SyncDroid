@@ -4,12 +4,13 @@ import android.content.Context
 import android.util.Log
 import com.syncdroid.app.data.SyncDroidDatabase
 import com.syncdroid.app.data.LocalFolderBindingEntity
-import com.syncdroid.app.scheduling.millisUntilNextRendezvous
+import com.syncdroid.app.scheduling.nextRendezvousStart
 import com.syncdroid.app.sync.TransferRateSampler
 import com.syncdroid.app.storage.StorageSyncWarning
 import com.syncdroid.shared.sync.MeshRouteCandidate
 import com.syncdroid.shared.sync.initialMeshFanoutTargets
 import com.syncdroid.shared.sync.propagationFanoutTargets
+import com.syncdroid.shared.discovery.MeshLanDiscovery
 import com.syncdroid.shared.update.MeshUpdateCache
 import java.io.Closeable
 import java.time.ZonedDateTime
@@ -24,6 +25,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -34,6 +37,7 @@ import kotlinx.coroutines.withContext
 sealed interface MeshRuntimeEvent {
     data class DiscoveryWaiting(val nextWindowAtMillis: Long) : MeshRuntimeEvent
     data class DiscoveryActive(val windowEndsAtMillis: Long?) : MeshRuntimeEvent
+    data class PresenceChanged(val peerIds: Set<String>) : MeshRuntimeEvent
     data class SyncStarted(val peerId: String, val peerName: String) : MeshRuntimeEvent
     data class TransferProgress(
         val peerId: String,
@@ -65,9 +69,9 @@ class MeshRuntime(
     private val identity: AndroidDeviceIdentity,
     private val groupId: String,
     private val groupName: String,
-    private val rendezvousIntervalMinutes: Int = 5,
+    private val rendezvousIntervalMinutes: Int = 3 * 60,
     private val scheduledDiscoveryEnabled: Boolean = true,
-    private val rendezvousWindowSeconds: Long = 30,
+    private val rendezvousWindowSeconds: Long = 5 * 60,
     private val discoverImmediately: Boolean = false,
     private val appInForeground: StateFlow<Boolean>,
     private val updateCache: MeshUpdateCache? = null,
@@ -77,6 +81,7 @@ class MeshRuntime(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activePeers = ConcurrentHashMap.newKeySet<String>()
     private val peerJobs = ConcurrentHashMap<String, Job>()
+    private val peerEndpoints = ConcurrentHashMap<String, DiscoveredMeshPeer>()
     private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
     private val propagationSignals = Channel<PropagationSignal>(Channel.BUFFERED)
     private val sessionStateLock = Any()
@@ -109,8 +114,13 @@ class MeshRuntime(
                         runDiscoveryWindow(client, port, rendezvousWindowSeconds * 1_000)
                     }
                     while (isActive) {
-                        val delayMillis = millisUntilNextRendezvous(ZonedDateTime.now(), rendezvousIntervalMinutes)
-                        onEvent(MeshRuntimeEvent.DiscoveryWaiting(System.currentTimeMillis() + delayMillis))
+                        val now = ZonedDateTime.now()
+                        val nextWindowAtMillis = nextRendezvousStart(now.toLocalDateTime(), rendezvousIntervalMinutes)
+                            .atZone(now.zone)
+                            .toInstant()
+                            .toEpochMilli()
+                        val delayMillis = (nextWindowAtMillis - System.currentTimeMillis()).coerceAtLeast(1)
+                        onEvent(MeshRuntimeEvent.DiscoveryWaiting(nextWindowAtMillis))
                         delay(delayMillis)
                         onEvent(MeshRuntimeEvent.DiscoveryActive(System.currentTimeMillis() + rendezvousWindowSeconds * 1_000))
                         runDiscoveryWindow(client, port, rendezvousWindowSeconds * 1_000)
@@ -122,19 +132,42 @@ class MeshRuntime(
 
     private suspend fun runDiscoveryWindow(client: MeshPeerClient, port: Int, durationMillis: Long?) {
         val nsd = MeshNsdDiscovery(appContext, identity.deviceId)
-        val trustedIds = database.meshDao().trustedDevices(groupId).mapTo(mutableSetOf()) { it.deviceId }
+        val lan = runCatching { MeshLanDiscovery(identity.deviceId, groupId).also { it.start(port) } }.getOrNull()
         val initialContacted = mutableSetOf<String>()
+        val loggedLanPeerIds = mutableSetOf<String>()
+        var latestPeers = emptyMap<String, DiscoveredMeshPeer>()
         synchronized(sessionStateLock) { acceptingDiscoveredSessions = true }
         discovery = nsd
         nsd.start(port)
         val collector = scope.launch {
-            nsd.peers.collectLatest { peers ->
+            combine(nsd.peers, lan?.peers ?: flowOf(emptyMap())) { nsdPeers, lanPeers ->
+                val fallbackPeers = lanPeers.mapValues { (_, peer) ->
+                    DiscoveredMeshPeer(
+                        peer.deviceId,
+                        "LAN fallback",
+                        peer.address,
+                        peer.port,
+                        peer.protocolMajor,
+                        peer.lastSeenAtMillis,
+                    )
+                }
+                mergeDiscoveredPeers(fallbackPeers, nsdPeers)
+            }.collectLatest { peers ->
+                latestPeers = peers
+                peers.forEach { (deviceId, peer) -> peerEndpoints[deviceId] = peer }
+                peers.values.filter { it.serviceName == "LAN fallback" && loggedLanPeerIds.add(it.deviceId) }
+                    .forEach { peer ->
+                        Log.d(TAG, "LAN fallback discovered ${peer.deviceId.take(8)} at ${peer.address.hostAddress}:${peer.port}")
+                    }
                 delay(ROUTING_SETTLE_MILLIS)
                 val removed = peerJobs.keys - peers.keys
                 removed.forEach { id ->
                     if (id !in activePeers) peerJobs.remove(id)?.cancel()
                 }
+                val trustedIds = database.meshDao().trustedDevices(groupId)
+                    .mapTo(mutableSetOf()) { it.deviceId }
                 val eligible = peers.filterValues { it.protocolMajor == 1 && it.deviceId in trustedIds }
+                onEvent(MeshRuntimeEvent.PresenceChanged(eligible.keys))
                 val remainingFanout = (ROUTING_FANOUT - initialContacted.size).coerceAtLeast(0)
                 val targets = initialMeshFanoutTargets(identity.deviceId, eligible.keys, ROUTING_FANOUT)
                     .filterNot(initialContacted::contains)
@@ -148,7 +181,9 @@ class MeshRuntime(
         val propagationWorker = scope.launch {
             for (signal in propagationSignals) {
                 delay(PROPAGATION_COALESCE_MILLIS)
-                val available = nsd.peers.value.filterValues {
+                val trustedIds = database.meshDao().trustedDevices(groupId)
+                    .mapTo(mutableSetOf()) { it.deviceId }
+                val available = latestPeers.filterValues {
                     it.protocolMajor == 1 && it.deviceId in trustedIds
                 }
                 val targets = propagationFanoutTargets(
@@ -180,10 +215,17 @@ class MeshRuntime(
                 propagationWorker.cancelAndJoin()
                 peerJobs.values.forEach(Job::cancel)
                 peerJobs.clear()
+                peerEndpoints.clear()
+                onEvent(MeshRuntimeEvent.PresenceChanged(emptySet()))
+                lan?.close()
                 nsd.close()
                 if (discovery === nsd) discovery = null
             }
         }
+    }
+
+    fun propagateMembershipChange(sourcePeerId: String) {
+        propagationSignals.trySend(PropagationSignal(sourcePeerId))
     }
 
     private fun launchPeerConnection(
@@ -194,15 +236,20 @@ class MeshRuntime(
         if (peer.deviceId in activePeers || peerJobs[peer.deviceId]?.isActive == true) return
         peerJobs[peer.deviceId] = scope.launch {
             do {
-                val connected = runCatching {
-                    client.connect(peer.address, peer.port).use { connection ->
+                val endpoint = peerEndpoints[peer.deviceId] ?: peer
+                val attempt = runCatching {
+                    client.connect(endpoint.address, endpoint.port).use { connection ->
                         StablePeerAuthenticator(database, identity, groupId).authenticate(connection)
                         require(connection.peer.deviceId == peer.deviceId) {
                             "NSD identity does not match mesh identity"
                         }
                         runSessionOnce(connection, alreadyAuthenticated = true)
                     }
-                }.isSuccess
+                }
+                attempt.exceptionOrNull()?.let { error ->
+                    Log.w(TAG, "Could not connect to ${peer.deviceId.take(8)} at ${endpoint.address.hostAddress}:${endpoint.port}", error)
+                }
+                val connected = attempt.isSuccess
                 if (connected || !retry) break
                 delay(CONNECTION_RETRY_MILLIS)
             } while (isActive)
@@ -297,6 +344,7 @@ class MeshRuntime(
         server?.close()
         peerJobs.values.forEach(Job::cancel)
         peerJobs.clear()
+        peerEndpoints.clear()
         discovery = null
         server = null
         scope.cancel()
@@ -313,6 +361,13 @@ class MeshRuntime(
 }
 
 private data class PropagationSignal(val sourcePeerId: String)
+
+private fun mergeDiscoveredPeers(
+    fallback: Map<String, DiscoveredMeshPeer>,
+    nsd: Map<String, DiscoveredMeshPeer>,
+): Map<String, DiscoveredMeshPeer> = (fallback.keys + nsd.keys).associateWith { deviceId ->
+    listOfNotNull(fallback[deviceId], nsd[deviceId]).maxBy(DiscoveredMeshPeer::lastSeenAtMillis)
+}
 
 internal fun shouldRunContinuousDiscovery(appInForeground: Boolean, scheduledDiscoveryEnabled: Boolean): Boolean =
     appInForeground || !scheduledDiscoveryEnabled

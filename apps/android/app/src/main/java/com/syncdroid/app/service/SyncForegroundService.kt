@@ -113,6 +113,11 @@ class SyncForegroundService : Service() {
                 SyncServiceController.report(policyChanged = true)
                 reconcile(force = true)
             }
+            ACTION_PROPAGATE_MEMBERSHIP -> {
+                val addedDeviceId = intent.getStringExtra(EXTRA_ADDED_DEVICE_ID)
+                if (addedDeviceId.isNullOrBlank()) reconcile(force = true)
+                else runtime?.propagateMembershipChange(addedDeviceId) ?: reconcile(force = true)
+            }
             ACTION_REFRESH -> reconcile(force = true)
             else -> reconcile(force = false)
         }
@@ -131,6 +136,7 @@ class SyncForegroundService : Service() {
             running = false,
             status = "Background sync stopped",
             activePeerIds = emptySet(),
+            onlinePeerIds = emptySet(),
         )
         super.onDestroy()
     }
@@ -278,6 +284,9 @@ class SyncForegroundService : Service() {
                 event.windowEndsAtMillis?.let { "Discovery active until ${formatTime(it)}" }
                     ?: "Discovery stays active while SyncDroid is open",
             )
+            is MeshRuntimeEvent.PresenceChanged -> SyncServiceController.report(
+                onlinePeerIds = event.peerIds,
+            )
             is MeshRuntimeEvent.SyncStarted -> {
                 activePeers[event.peerId] = event.peerName
                 peerTransferRates.remove(event.peerId)
@@ -303,6 +312,7 @@ class SyncForegroundService : Service() {
                 } else {
                     showActiveSyncStatus()
                 }
+                eventNotifications.showSyncComplete(event.peerName)
                 SyncServiceController.report(syncCompleted = true)
                 runPendingReconcileIfIdle()
             }
@@ -417,6 +427,8 @@ class SyncForegroundService : Service() {
 
     companion object {
         const val ACTION_REFRESH = "com.syncdroid.app.action.REFRESH_BACKGROUND_SYNC"
+        const val ACTION_PROPAGATE_MEMBERSHIP = "com.syncdroid.app.action.PROPAGATE_MEMBERSHIP"
+        const val EXTRA_ADDED_DEVICE_ID = "com.syncdroid.app.extra.ADDED_DEVICE_ID"
         const val ACTION_CYCLE_INTERVAL = "com.syncdroid.app.action.CYCLE_DISCOVERY_INTERVAL"
         const val ACTION_CYCLE_WINDOW = "com.syncdroid.app.action.CYCLE_DISCOVERY_WINDOW"
     }

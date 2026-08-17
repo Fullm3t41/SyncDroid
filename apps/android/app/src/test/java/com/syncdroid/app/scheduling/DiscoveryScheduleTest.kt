@@ -34,11 +34,11 @@ class DiscoveryScheduleTest {
     }
 
     @Test
-    fun fiveMinuteScheduleUsesZeroFiveTenBoundaries() {
-        val windows = alignedDiscoveryWindows(LocalTime.of(9, 1), intervalMinutes = 5, count = 3)
+    fun fifteenMinuteScheduleUsesQuarterHourBoundariesAndFiveMinuteWindows() {
+        val windows = alignedDiscoveryWindows(LocalTime.of(9, 1), intervalMinutes = 15, count = 3)
 
         assertEquals(
-            listOf("09:05:00–09:05:30", "09:10:00–09:10:30", "09:15:00–09:15:30"),
+            listOf("09:15–09:20", "09:30–09:35", "09:45–09:50"),
             windows.map { it.label() },
         )
     }
@@ -109,12 +109,14 @@ class DiscoveryScheduleTest {
 
     @Test
     fun cadenceDefaultsCanBeOverridden() {
-        assertEquals(30L, DiscoveryPolicy(intervalMinutes = 5).windowSeconds)
+        assertEquals(3 * 60, DiscoveryPolicy().intervalMinutes)
         assertEquals(300L, DiscoveryPolicy(intervalMinutes = 15).windowSeconds)
         assertEquals(
-            60L,
-            DiscoveryPolicy(intervalMinutes = 5, windowSecondsOverride = 60).windowSeconds,
+            600L,
+            DiscoveryPolicy(intervalMinutes = 15, windowSecondsOverride = 600).windowSeconds,
         )
+        assertEquals(listOf(300L, 600L, 900L), DiscoveryPolicy.SUPPORTED_WINDOWS_SECONDS.sorted())
+        assertEquals(listOf(15, 30, 60, 180, 360, 1_440, 2_880, 10_080), DiscoveryPolicy.SUPPORTED_INTERVALS.sorted())
     }
 
     @Test

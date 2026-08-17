@@ -2,6 +2,8 @@ package com.syncdows.app.platform
 
 import com.syncdows.app.model.MainSection
 import com.syncdows.app.model.ThemeMode
+import com.syncdows.app.mesh.normalizeDiscoveryInterval
+import com.syncdows.app.mesh.normalizeDiscoveryWindow
 import java.util.Base64
 import java.util.prefs.Preferences
 
@@ -27,12 +29,16 @@ class AppPreferences {
         set(value) = preferences.putFloat(KEY_WINDOW_HEIGHT, value)
 
     var discoveryIntervalMinutes: Int
-        get() = preferences.getInt(KEY_DISCOVERY_INTERVAL, 5)
+        get() = normalizeDiscoveryInterval(preferences.get(KEY_DISCOVERY_INTERVAL, null)?.toIntOrNull())
         set(value) = preferences.putInt(KEY_DISCOVERY_INTERVAL, value)
 
     var discoveryWindowSeconds: Long
-        get() = preferences.getLong(KEY_DISCOVERY_WINDOW, 30L)
+        get() = normalizeDiscoveryWindow(preferences.get(KEY_DISCOVERY_WINDOW, null)?.toLongOrNull())
         set(value) = preferences.putLong(KEY_DISCOVERY_WINDOW, value)
+
+    var alwaysOnDiscovery: Boolean
+        get() = preferences.getBoolean(KEY_ALWAYS_ON_DISCOVERY, false)
+        set(value) = preferences.putBoolean(KEY_ALWAYS_ON_DISCOVERY, value)
 
     var deviceName: String?
         get() = preferences.get(KEY_DEVICE_NAME, null)?.takeIf(String::isNotBlank)
@@ -101,6 +107,7 @@ class AppPreferences {
         const val KEY_WINDOW_HEIGHT = "window_height"
         const val KEY_DISCOVERY_INTERVAL = "discovery_interval_minutes"
         const val KEY_DISCOVERY_WINDOW = "discovery_window_seconds"
+        const val KEY_ALWAYS_ON_DISCOVERY = "always_on_discovery"
         const val KEY_DEVICE_NAME = "device_name"
         const val KEY_LAUNCH_AT_LOGIN = "launch_at_login"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check_millis"

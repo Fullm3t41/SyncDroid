@@ -33,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -43,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -73,14 +75,16 @@ fun TrayPanelWindow(
     meshState: MeshRuntimeState,
     discoveryInterval: Int,
     discoveryWindow: Long,
+    alwaysOnDiscovery: Boolean,
     onOpen: () -> Unit,
     onDiscoveryIntervalChanged: (Int) -> Unit,
     onDiscoveryWindowChanged: (Long) -> Unit,
+    onAlwaysOnDiscoveryChanged: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onQuit: () -> Unit,
 ) {
     val visiblePeerCount = min(meshState.peers.size, 5)
-    val panelHeight = (360 + visiblePeerCount * 34).dp
+    val panelHeight = (414 + visiblePeerCount * 34).dp
     val windowState = rememberDialogState(width = 376.dp, height = panelHeight)
     var intervalMenuExpanded by remember { mutableStateOf(false) }
     var durationMenuExpanded by remember { mutableStateOf(false) }
@@ -182,10 +186,24 @@ fun TrayPanelWindow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Always on", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            Switch(checked = alwaysOnDiscovery, onCheckedChange = onAlwaysOnDiscoveryChanged)
+                        }
+                    }
                     TraySelectionRow(
                         icon = Icons.Rounded.Schedule,
                         title = "Sync interval",
                         value = discoveryIntervalLabel(discoveryInterval),
+                        enabled = !alwaysOnDiscovery,
                         expanded = intervalMenuExpanded,
                         onExpandedChange = {
                             durationMenuExpanded = false
@@ -203,6 +221,7 @@ fun TrayPanelWindow(
                         icon = Icons.Rounded.Timer,
                         title = "Discovery duration",
                         value = discoveryWindowLabel(discoveryWindow),
+                        enabled = !alwaysOnDiscovery,
                         expanded = durationMenuExpanded,
                         onExpandedChange = {
                             intervalMenuExpanded = false
@@ -285,6 +304,7 @@ private fun <T> TraySelectionRow(
     icon: ImageVector,
     title: String,
     value: String,
+    enabled: Boolean = true,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     options: List<T>,
@@ -292,9 +312,9 @@ private fun <T> TraySelectionRow(
     optionLabel: (T) -> String,
     onSelected: (T) -> Unit,
 ) {
-    Box {
+    Box(Modifier.alpha(if (enabled) 1f else 0.38f)) {
         Surface(
-            modifier = Modifier.fillMaxWidth().clickable { onExpandedChange(!expanded) },
+            modifier = Modifier.fillMaxWidth().clickable(enabled = enabled) { onExpandedChange(!expanded) },
             shape = RoundedCornerShape(13.dp),
             color = MaterialTheme.colorScheme.surface,
         ) {
@@ -308,7 +328,7 @@ private fun <T> TraySelectionRow(
             }
         }
         DropdownMenu(
-            expanded = expanded,
+            expanded = expanded && enabled,
             onDismissRequest = { onExpandedChange(false) },
             modifier = Modifier.width(300.dp),
         ) {

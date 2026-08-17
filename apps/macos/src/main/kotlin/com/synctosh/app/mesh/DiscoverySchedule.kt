@@ -6,8 +6,24 @@ import java.time.LocalDateTime
 
 data class ScheduledDiscoveryWindow(val start: LocalDateTime, val end: LocalDateTime)
 
-val SUPPORTED_DISCOVERY_INTERVALS = listOf(5, 15, 30, 60, 6 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
-val SUPPORTED_DISCOVERY_WINDOWS = listOf(30L, 60L, 120L, 300L)
+const val DEFAULT_DISCOVERY_INTERVAL_MINUTES = 3 * 60
+const val DEFAULT_DISCOVERY_WINDOW_SECONDS = 5 * 60L
+val SUPPORTED_DISCOVERY_INTERVALS = listOf(15, 30, 60, DEFAULT_DISCOVERY_INTERVAL_MINUTES, 6 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
+val SUPPORTED_DISCOVERY_WINDOWS = listOf(DEFAULT_DISCOVERY_WINDOW_SECONDS, 10 * 60L, 15 * 60L)
+
+fun normalizeDiscoveryInterval(stored: Int?): Int = when {
+    stored == null -> DEFAULT_DISCOVERY_INTERVAL_MINUTES
+    stored in SUPPORTED_DISCOVERY_INTERVALS -> stored
+    stored < SUPPORTED_DISCOVERY_INTERVALS.first() -> SUPPORTED_DISCOVERY_INTERVALS.first()
+    else -> DEFAULT_DISCOVERY_INTERVAL_MINUTES
+}
+
+fun normalizeDiscoveryWindow(stored: Long?): Long = when {
+    stored == null -> DEFAULT_DISCOVERY_WINDOW_SECONDS
+    stored in SUPPORTED_DISCOVERY_WINDOWS -> stored
+    stored < SUPPORTED_DISCOVERY_WINDOWS.first() -> SUPPORTED_DISCOVERY_WINDOWS.first()
+    else -> DEFAULT_DISCOVERY_WINDOW_SECONDS
+}
 
 fun discoveryIntervalLabel(minutes: Int, compact: Boolean = false): String = when {
     minutes == 7 * 24 * 60 -> if (compact) "1 wk" else "1 week"

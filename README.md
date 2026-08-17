@@ -16,12 +16,12 @@ SyncDroid connects Android, macOS and Windows devices as an equal-peer mesh. The
     <td align="center"><strong>SyncTosh · macOS</strong></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/readme/syncdroid-sync.png" width="300" alt="SyncDroid local mesh sync screen"></td>
-    <td align="center"><img src="docs/images/readme/synctosh-sync.png" width="680" alt="SyncTosh local mesh sync screen"></td>
+    <td align="center"><img src="assets/readme/syncdroid-sync.png" width="300" alt="SyncDroid local mesh sync screen"></td>
+    <td align="center"><img src="assets/readme/synctosh-sync.png" width="680" alt="SyncTosh local mesh sync screen"></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/readme/syncdroid-settings.png" width="300" alt="SyncDroid settings screen"></td>
-    <td align="center"><img src="docs/images/readme/synctosh-folders.png" width="680" alt="SyncTosh folder management screen"></td>
+    <td align="center"><img src="assets/readme/syncdroid-settings.png" width="300" alt="SyncDroid settings screen"></td>
+    <td align="center"><img src="assets/readme/synctosh-folders.png" width="680" alt="SyncTosh folder management screen"></td>
   </tr>
 </table>
 
@@ -69,10 +69,14 @@ The six-digit code is designed for convenient nearby pairing, not for publishing
 | **SyncDows** | Windows 10/11 | Native testing in progress |
 | **SyncDeck** | Linux/SteamOS | Planned |
 
-Release downloads are self-contained: SyncDroid is provided as an Android APK, SyncTosh as an Apple Silicon DMG, and SyncDows as a branded Windows EXE. From version 0.2.0 onward, every app checks the signed GitHub release manifest at startup and daily, and can reuse a verified installer cached by a trusted mesh peer. See [Releasing](docs/releasing.md) before publishing a version.
+Release downloads are self-contained: SyncDroid is provided as an Android APK, SyncTosh as an Apple Silicon DMG, and SyncDows as a branded Windows EXE. From version 0.2.0 onward, every app checks the signed GitHub release manifest at startup and daily, and can reuse a verified installer cached by a trusted mesh peer.
 
 ## Current scope
 
 The local peer mesh, file transfer engine, resumable blocks, history, recovery, chat and conflict foundations are implemented. Google Drive and OneDrive adapters, broader release hardening, code signing/notarization and SyncDeck remain ongoing work.
 
-Technical architecture and protocol notes are maintained in [`docs/cross-platform-protocol.md`](docs/cross-platform-protocol.md) and [`docs/update-system.md`](docs/update-system.md).
+## Licence
+
+SyncDroid, SyncTosh, SyncDows and the shared protocol/synchronization code are licensed under the [GNU General Public License version 3](LICENSE). Distributed modifications must remain under GPLv3 and include the corresponding source.
+
+The application names, logos and icons remain reserved project branding. Forks and independently distributed builds must follow the [trademark policy](TRADEMARKS.md). Third-party components retain their respective licences.

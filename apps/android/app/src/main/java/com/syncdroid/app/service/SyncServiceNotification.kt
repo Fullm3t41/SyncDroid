@@ -17,16 +17,21 @@ class SyncServiceNotification(private val context: Context) {
     fun build(title: String, detail: String, policy: DiscoveryPolicy): Notification {
         val interval = formatInterval(policy.intervalMinutes)
         val window = formatWindow(policy.windowSeconds)
+        val scheduleSummary = if (policy.alwaysOnDiscovery) {
+            "Discovery always on"
+        } else {
+            "Discovery every $interval · window $window"
+        }
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_syncdroid)
             .setContentTitle(title)
             .setContentText(detail)
             .setStyle(
                 NotificationCompat.BigTextStyle().bigText(
-                    "$detail\nDiscovery every $interval · window $window\nUse the controls below to sync now or change the schedule.",
+                    "$detail\n$scheduleSummary\nUse the controls below to sync now or change the schedule.",
                 ),
             )
-            .setSubText("Every $interval · $window window")
+            .setSubText(if (policy.alwaysOnDiscovery) "Discovery always on" else "Every $interval · $window window")
             .setContentIntent(openAppIntent())
             .setOngoing(true)
             .setOnlyAlertOnce(true)

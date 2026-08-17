@@ -69,6 +69,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1283,10 +1284,12 @@ private fun formatFileSize(bytes: Long): String = when {
 fun PowerDiscoveryScreen(
     intervalMinutes: Int,
     windowSeconds: Long,
+    alwaysOnDiscovery: Boolean,
     currentWifiName: String?,
     registeredWifiNames: Set<String>,
     onIntervalChanged: (Int) -> Unit,
     onWindowChanged: (Long) -> Unit,
+    onAlwaysOnChanged: (Boolean) -> Unit,
     onRegisterCurrentWifi: () -> Unit,
     onRemoveRegisteredWifi: (String) -> Unit,
     onBack: () -> Unit,
@@ -1362,15 +1365,40 @@ fun PowerDiscoveryScreen(
                 }
             }
             item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Always-on discovery", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Keep looking for peers 24/7, ideal for plugged-in PCs",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = alwaysOnDiscovery, onCheckedChange = onAlwaysOnChanged)
+                    }
+                }
+            }
+            item {
                 SectionLabel("DISCOVERY INTERVAL")
                 Spacer(Modifier.height(8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.alpha(if (alwaysOnDiscovery) 0.38f else 1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     SUPPORTED_DISCOVERY_INTERVALS.chunked(4).forEach { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { minutes ->
                                 SelectablePill(
                                     label = discoveryIntervalLabel(minutes, compact = true),
                                     selected = minutes == intervalMinutes,
+                                    enabled = !alwaysOnDiscovery,
                                     onClick = { onIntervalChanged(minutes) },
                                     modifier = Modifier.weight(1f),
                                 )
@@ -1382,18 +1410,22 @@ fun PowerDiscoveryScreen(
             item {
                 SectionLabel("DISCOVERY WINDOW")
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.alpha(if (alwaysOnDiscovery) 0.38f else 1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     SUPPORTED_DISCOVERY_WINDOWS.forEach { seconds ->
                         SelectablePill(
                             label = if (seconds < 60) "${seconds}s" else "${seconds / 60} min",
                             selected = seconds == windowSeconds,
+                            enabled = !alwaysOnDiscovery,
                             onClick = { onWindowChanged(seconds) },
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
             }
-            item {
+            if (!alwaysOnDiscovery) item {
                 SectionLabel("UPCOMING WINDOWS")
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1437,7 +1469,11 @@ fun PowerDiscoveryScreen(
                         Icon(Icons.Rounded.Schedule, contentDescription = null)
                         Spacer(Modifier.width(11.dp))
                         Text(
-                            "All devices use the same midnight-based schedule. In the foreground, discovery remains continuously available on connected Wi-Fi.",
+                            if (alwaysOnDiscovery) {
+                                "Discovery remains continuously active in the background. This uses more power, while the scheduled interval and window remain saved for later."
+                            } else {
+                                "All devices use the same midnight-based schedule. Fresh installs check every three hours with a five-minute window. In the foreground, discovery remains continuously available on connected Wi-Fi."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }

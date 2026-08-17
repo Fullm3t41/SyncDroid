@@ -65,6 +65,7 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
     var trayPanelAnchor by remember { mutableStateOf(Point()) }
     var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
     var discoveryWindow by remember { mutableLongStateOf(preferences.discoveryWindowSeconds) }
+    var alwaysOnDiscovery by remember { mutableStateOf(preferences.alwaysOnDiscovery) }
     val windowState = rememberWindowState(
         position = WindowPosition.Aligned(androidx.compose.ui.Alignment.Center),
         width = preferences.windowWidth.dp,
@@ -103,6 +104,12 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
         meshRuntime.discoveryScheduleChanged()
     }
 
+    fun updateAlwaysOnDiscovery(enabled: Boolean) {
+        alwaysOnDiscovery = enabled
+        preferences.alwaysOnDiscovery = enabled
+        meshRuntime.discoveryScheduleChanged()
+    }
+
     fun quitApplication() {
         saveWindowState()
         meshRuntime.close()
@@ -125,9 +132,11 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
             meshState = meshState,
             discoveryInterval = discoveryInterval,
             discoveryWindow = discoveryWindow,
+            alwaysOnDiscovery = alwaysOnDiscovery,
             onOpen = ::showWindow,
             onDiscoveryIntervalChanged = ::updateDiscoveryInterval,
             onDiscoveryWindowChanged = ::updateDiscoveryWindow,
+            onAlwaysOnDiscoveryChanged = ::updateAlwaysOnDiscovery,
             onDismiss = { trayPanelVisible = false },
             onQuit = ::quitApplication,
         )
@@ -145,8 +154,10 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
                 runtime = meshRuntime,
                 discoveryInterval = discoveryInterval,
                 discoveryWindow = discoveryWindow,
+                alwaysOnDiscovery = alwaysOnDiscovery,
                 onDiscoveryIntervalChanged = ::updateDiscoveryInterval,
                 onDiscoveryWindowChanged = ::updateDiscoveryWindow,
+                onAlwaysOnDiscoveryChanged = ::updateAlwaysOnDiscovery,
                 onCloseToNotificationBar = ::closeToNotificationBar,
                 updateService = updateService,
                 onInstallUpdate = { installer ->

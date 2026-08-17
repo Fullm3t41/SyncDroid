@@ -137,7 +137,7 @@ This avoids requiring a disruptive Android protocol migration before the Mac can
 
 ## 5. Visual system
 
-SyncTosh should use the same calm, calm, minimal visual direction as SyncDroid:
+SyncTosh should use the same calm, minimal visual direction as SyncDroid:
 
 - Neutral background and surface hierarchy.
 - Generous whitespace.

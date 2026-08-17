@@ -91,7 +91,7 @@ fun alignedDiscoveryWindows(
     }
 }
 
-fun rendezvousWindowSeconds(intervalMinutes: Int): Long = if (intervalMinutes == 5) 30 else 5 * 60
+fun rendezvousWindowSeconds(intervalMinutes: Int): Long = DiscoveryPolicy.DEFAULT_WINDOW_SECONDS
 
 fun discoveryWindows(
     firstPing: LocalTime,

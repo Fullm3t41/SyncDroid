@@ -4,7 +4,7 @@ import android.content.Context
 
 data class DiscoveryPolicy(
     val scheduledDiscoveryEnabled: Boolean = true,
-    val intervalMinutes: Int = 5,
+    val intervalMinutes: Int = DEFAULT_INTERVAL_MINUTES,
     val windowSecondsOverride: Long? = null,
 ) {
     init {
@@ -13,10 +13,13 @@ data class DiscoveryPolicy(
     }
 
     val windowSeconds: Long get() = windowSecondsOverride ?: rendezvousWindowSeconds(intervalMinutes)
+    val alwaysOnDiscovery: Boolean get() = !scheduledDiscoveryEnabled
 
     companion object {
-        val SUPPORTED_INTERVALS = setOf(5, 15, 30, 60, 6 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
-        val SUPPORTED_WINDOWS_SECONDS = setOf(30L, 60L, 120L, 300L)
+        const val DEFAULT_INTERVAL_MINUTES = 3 * 60
+        const val DEFAULT_WINDOW_SECONDS = 5 * 60L
+        val SUPPORTED_INTERVALS = setOf(15, 30, 60, DEFAULT_INTERVAL_MINUTES, 6 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
+        val SUPPORTED_WINDOWS_SECONDS = setOf(DEFAULT_WINDOW_SECONDS, 10 * 60L, 15 * 60L)
     }
 }
 
@@ -24,14 +27,26 @@ class DiscoveryPolicyStore(context: Context) {
     private val preferences = context.getSharedPreferences("discovery_policy", Context.MODE_PRIVATE)
 
     fun load(): DiscoveryPolicy {
+        val storedInterval = preferences.takeIf { it.contains(KEY_INTERVAL) }
+            ?.getInt(KEY_INTERVAL, DiscoveryPolicy.DEFAULT_INTERVAL_MINUTES)
+        val interval = when {
+            storedInterval == null -> DiscoveryPolicy.DEFAULT_INTERVAL_MINUTES
+            storedInterval in DiscoveryPolicy.SUPPORTED_INTERVALS -> storedInterval
+            storedInterval < DiscoveryPolicy.SUPPORTED_INTERVALS.min() -> DiscoveryPolicy.SUPPORTED_INTERVALS.min()
+            else -> DiscoveryPolicy.DEFAULT_INTERVAL_MINUTES
+        }
         val storedWindow = preferences.takeIf { it.contains(KEY_WINDOW_SECONDS) }
-            ?.getLong(KEY_WINDOW_SECONDS, 0)
-            ?.takeIf { it in DiscoveryPolicy.SUPPORTED_WINDOWS_SECONDS }
+            ?.getLong(KEY_WINDOW_SECONDS, DiscoveryPolicy.DEFAULT_WINDOW_SECONDS)
+            ?.let { seconds ->
+                when {
+                    seconds in DiscoveryPolicy.SUPPORTED_WINDOWS_SECONDS -> seconds
+                    seconds < DiscoveryPolicy.DEFAULT_WINDOW_SECONDS -> DiscoveryPolicy.DEFAULT_WINDOW_SECONDS
+                    else -> null
+                }
+            }
         return DiscoveryPolicy(
             scheduledDiscoveryEnabled = preferences.getBoolean(KEY_ENABLED, true),
-            intervalMinutes = preferences.getInt(KEY_INTERVAL, 5).takeIf {
-                it in DiscoveryPolicy.SUPPORTED_INTERVALS
-            } ?: 5,
+            intervalMinutes = interval,
             windowSecondsOverride = storedWindow,
         )
     }

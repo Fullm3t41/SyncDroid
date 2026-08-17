@@ -17,3 +17,4 @@ captures/
 *.msi
 *.jks
 *.keystore
+/docs/

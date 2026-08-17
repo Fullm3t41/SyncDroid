@@ -1,5 +1,5 @@
 package com.synctosh.app.platform
 
 object UpdateConfig {
-    const val CURRENT_VERSION = "0.2.1"
+    const val CURRENT_VERSION = "0.2.2"
 }

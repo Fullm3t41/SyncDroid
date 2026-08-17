@@ -56,8 +56,10 @@ fun SyncDowsApp(
     runtime: MeshRuntime,
     discoveryInterval: Int,
     discoveryWindow: Long,
+    alwaysOnDiscovery: Boolean,
     onDiscoveryIntervalChanged: (Int) -> Unit,
     onDiscoveryWindowChanged: (Long) -> Unit,
+    onAlwaysOnDiscoveryChanged: (Boolean) -> Unit,
     onCloseToNotificationBar: () -> Unit,
     updateService: ReleaseUpdateService,
     onInstallUpdate: (Path) -> Unit,
@@ -85,7 +87,11 @@ fun SyncDowsApp(
     var folderToConfigure by remember { mutableStateOf<MeshFolder?>(null) }
     var folderConfigurationError by remember { mutableStateOf<String?>(null) }
     var platformError by remember { mutableStateOf<String?>(null) }
+    var dismissedWifiSuggestion by remember { mutableStateOf<String?>(null) }
     val promptedFolderIds = remember { mutableSetOf<String>() }
+    val suggestedWifi = meshState.currentWifiName?.takeIf { current ->
+        meshState.profile != null && current !in meshState.registeredWifiNames && current != dismissedWifiSuggestion
+    }
 
     LaunchedEffect(meshState.pairingOffer) {
         if (meshState.pairingOffer != null) showPairingOffer = true
@@ -145,10 +151,12 @@ fun SyncDowsApp(
                         SecondaryScreen.PowerDiscovery -> PowerDiscoveryScreen(
                             intervalMinutes = discoveryInterval,
                             windowSeconds = discoveryWindow,
+                            alwaysOnDiscovery = alwaysOnDiscovery,
                             currentWifiName = meshState.currentWifiName,
                             registeredWifiNames = meshState.registeredWifiNames,
                             onIntervalChanged = onDiscoveryIntervalChanged,
                             onWindowChanged = onDiscoveryWindowChanged,
+                            onAlwaysOnChanged = onAlwaysOnDiscoveryChanged,
                             onRegisterCurrentWifi = runtime::registerCurrentWifi,
                             onRemoveRegisteredWifi = runtime::removeRegisteredWifi,
                             onBack = { secondaryScreen = null },
@@ -291,6 +299,14 @@ fun SyncDowsApp(
                             )
                         }
                     }
+                }
+                suggestedWifi?.let { ssid ->
+                    WifiSuggestionBanner(
+                        ssid = ssid,
+                        onYes = runtime::registerCurrentWifi,
+                        onNo = { dismissedWifiSuggestion = ssid },
+                        modifier = Modifier.widthIn(max = 560.dp).padding(16.dp),
+                    )
                 }
             }
         }
