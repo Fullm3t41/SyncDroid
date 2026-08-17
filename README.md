@@ -10,20 +10,10 @@ SyncDroid-Mesh connects Android, macOS and Windows devices as an equal-peer mesh
 
 ## Preview
 
-<table>
-  <tr>
-    <td align="center"><strong>SyncDroid-Mesh · Android</strong></td>
-    <td align="center"><strong>SyncTosh · macOS</strong></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="assets/readme/syncdroid-sync.png" width="300" alt="SyncDroid-Mesh local mesh sync screen"></td>
-    <td align="center"><img src="assets/readme/synctosh-sync.png" width="680" alt="SyncTosh local mesh sync screen"></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="assets/readme/syncdroid-settings.png" width="300" alt="SyncDroid-Mesh settings screen"></td>
-    <td align="center"><img src="assets/readme/synctosh-folders.png" width="680" alt="SyncTosh folder management screen"></td>
-  </tr>
-</table>
+| SyncDroid-Mesh · Android | SyncTosh · macOS |
+| --- | --- |
+| ![SyncDroid-Mesh local mesh sync screen](./assets/readme/syncdroid-sync.png) | ![SyncTosh local mesh sync screen](./assets/readme/synctosh-sync.png) |
+| ![SyncDroid-Mesh settings screen](./assets/readme/syncdroid-settings.png) | ![SyncTosh folder management screen](./assets/readme/synctosh-folders.png) |
 
 ## What it does
 
