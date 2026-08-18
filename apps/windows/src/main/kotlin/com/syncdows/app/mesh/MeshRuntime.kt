@@ -6,10 +6,18 @@ import com.syncdroid.shared.sync.initialMeshFanoutTargets
 import com.syncdroid.shared.sync.propagationFanoutTargets
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.discovery.MeshLanDiscovery
+import com.syncdroid.shared.cloud.CloudProvider
+import com.syncdroid.shared.cloud.CloudSyncTrigger
+import com.syncdroid.shared.cloud.PairingFolderKeyCrypto
 import com.syncdows.app.model.MeshPeer
 import com.syncdows.app.platform.AppPreferences
 import com.syncdows.app.platform.WindowsWifi
 import java.io.Closeable
+import java.io.EOFException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.nio.file.Path
 import java.security.SecureRandom
 import java.time.LocalDateTime
@@ -19,6 +27,7 @@ import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +57,7 @@ data class MeshRuntimeState(
     val syncExceptions: List<SyncExceptionState> = emptyList(),
     val currentWifiName: String? = null,
     val registeredWifiNames: Set<String> = emptySet(),
+    val cloudAccounts: List<CloudAccountStatus> = emptyList(),
     val status: String = "Ready to connect",
     val pairingOffer: VisiblePairingOffer? = null,
     val busy: Boolean = false,
@@ -80,6 +90,9 @@ class MeshRuntime(
     private val syncMutex = Mutex()
     private val fileHistory = FileHistoryRepository(store, identity.deviceId)
     private val chatAttachments = ChatAttachmentStore(store)
+    private val cloud = DesktopCloudSync(preferences, store, identity) { cloudStatus ->
+        mutableState.value = mutableState.value.copy(status = cloudStatus, busy = false)
+    }
     private var expiryJob: Job? = null
     private var backgroundScheduleJob: Job? = null
     @Volatile private var windowForeground = true
@@ -397,9 +410,22 @@ class MeshRuntime(
     fun syncNow() = scope.launch {
         val profile = store.profile() ?: return@launch
         updateBusy("Looking for trusted devices…")
+        runCatching { cloud.sync(CloudSyncTrigger.MANUAL) }.onFailure(::report)
         val discovered = discoveredPeers()
         connectToAvailablePeers(profile, discovered.values, initiatorOrdering = false)
         if (discovered.isEmpty()) refresh("No trusted devices are currently online")
+    }
+
+    fun connectCloud(provider: CloudProvider) = scope.launch {
+        updateBusy("Connecting ${provider.displayName}…")
+        runCatching { cloud.connect(provider) }
+            .onSuccess { refresh("${provider.displayName} connected") }
+            .onFailure(::report)
+    }
+
+    fun disconnectCloud(provider: CloudProvider) {
+        cloud.disconnect(provider)
+        refresh("${provider.displayName} disconnected")
     }
 
     fun sendChat(body: String) = scope.launch {
@@ -542,7 +568,12 @@ class MeshRuntime(
         store.recordTlsKey(profile.groupId, pairing.remoteIdentity.deviceId, connection.peerTlsIdentity.publicKeySpki)
         connection.send(
             PairingCompletionCodec.encode(
-                PairingCompletionMessage.Complete(profile.groupId, profile.groupName, MeshWireCodec.encode(store.exportBundle())),
+                PairingCompletionMessage.Complete(
+                    profile.groupId,
+                    profile.groupName,
+                    MeshWireCodec.encode(store.exportBundle()),
+                    cloud.pairingKeys(profile).map { PairingFolderKeyCrypto.wrap(it, pairing.sessionKey) },
+                ),
             ),
         )
         require(PairingCompletionCodec.decode(connection.receive()) == PairingCompletionMessage.Ack)
@@ -577,6 +608,9 @@ class MeshRuntime(
                 expectedOfferingIdentity = result.remoteIdentity,
                 requiredLocalDeviceId = identity.deviceId,
             )
+            completion.folderKeys.forEach { wrapped ->
+                cloud.importPairingKey(PairingFolderKeyCrypto.unwrap(wrapped, result.sessionKey))
+            }
             require(profile.groupId == completion.groupId && profile.groupName == completion.groupName)
             store.recordTlsKey(profile.groupId, result.remoteIdentity.deviceId, connection.peerTlsIdentity.publicKeySpki)
             connection.send(PairingCompletionCodec.encode(PairingCompletionMessage.Ack))
@@ -611,6 +645,7 @@ class MeshRuntime(
             syncExceptions = store.activeSyncExceptions(),
             currentWifiName = WindowsWifi.currentSsid() ?: mutableState.value.currentWifiName,
             registeredWifiNames = preferences.registeredWifiNames,
+            cloudAccounts = cloud.accounts(),
             status = status,
             busy = false,
             attemptsRemaining = preferences.pairingAttemptState().normalized().attemptsRemaining,
@@ -695,7 +730,7 @@ class MeshRuntime(
         val trustedIds = store.devices(profile.groupId)
             .filter(TrustedDevice::trusted)
             .mapTo(mutableSetOf(), TrustedDevice::deviceId)
-        val available = peers.filter { it.protocolMajor == 1 && it.deviceId in trustedIds }
+        val available = peers.filter { it.protocolMajor == 2 && it.deviceId in trustedIds }
             .associateBy(DiscoveredPeer::deviceId)
         val targetIds = if (initiatorOrdering) {
             val remaining = (ROUTING_FANOUT - automaticallyContactedPeers.size).coerceAtLeast(0)
@@ -733,10 +768,20 @@ class MeshRuntime(
         activeSessions.remove(peerId)
         automaticallyContactedPeers.remove(peerId)
         connectionJobs.remove(peerId)
-        mutableState.value = mutableState.value.copy(
-            status = "Waiting for trusted peers",
-            error = error.message?.takeIf { it.isNotBlank() },
-        )
+        if (error is CancellationException) return
+        val peerName = store.profile()
+            ?.let { profile -> store.devices(profile.groupId).firstOrNull { it.deviceId == peerId } }
+            ?.displayName
+            ?: "Trusted device"
+        val current = mutableState.value
+        mutableState.value = if (error.isTransientPeerAvailabilityFailure()) {
+            current.copy(status = "$peerName is unavailable · retrying automatically")
+        } else {
+            current.copy(
+                status = "$peerName needs attention",
+                error = error.message?.takeIf(String::isNotBlank) ?: "Secure mesh session failed",
+            )
+        }
     }
 
     private fun updateBusy(status: String) {
@@ -780,6 +825,7 @@ class MeshRuntime(
                     store.profile()?.let { profile ->
                         connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
                     }
+                    runCatching { cloud.sync(CloudSyncTrigger.SCHEDULED_WINDOW) }.onFailure(::report)
                     while (
                         isActive && !windowForeground && preferences.alwaysOnDiscovery &&
                         backgroundWifiAllowed(WindowsWifi.currentSsid())
@@ -808,6 +854,7 @@ class MeshRuntime(
                 if (System.currentTimeMillis() >= endMillis) continue
                 setDiscoveryActive(true)
                 refresh("Background discovery window open")
+                runCatching { cloud.sync(CloudSyncTrigger.SCHEDULED_WINDOW) }.onFailure(::report)
                 store.profile()?.let { profile ->
                     connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
                 }
@@ -887,5 +934,14 @@ private fun formatTransferRate(bytesPerSecond: Long): String = when {
     bytesPerSecond >= 1024L -> "%.0f KB/s".format(bytesPerSecond / 1024.0)
     else -> "$bytesPerSecond B/s"
 }
+
+internal fun Throwable.isTransientPeerAvailabilityFailure(): Boolean =
+    generateSequence(this) { it.cause }.any { cause ->
+        cause is ConnectException ||
+            cause is NoRouteToHostException ||
+            cause is SocketTimeoutException ||
+            cause is SocketException ||
+            cause is EOFException
+    }
 
 private val BACKGROUND_TIME_FORMAT = DateTimeFormatter.ofPattern("EEE d MMM, HH:mm")

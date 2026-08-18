@@ -12,5 +12,6 @@ kotlin {
 dependencies {
     api(project(":mesh-protocol"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation("org.json:json:20250517")
     testImplementation(kotlin("test-junit"))
 }

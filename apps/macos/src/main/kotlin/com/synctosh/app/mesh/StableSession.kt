@@ -2,6 +2,8 @@ package com.synctosh.app.mesh
 
 import com.syncdroid.shared.protocol.FileTransferMessage
 import com.syncdroid.shared.protocol.MeshSessionMessage
+import com.syncdroid.shared.protocol.SessionFolderKey
+import com.syncdroid.shared.cloud.FolderKeyMaterial
 import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import com.syncdroid.shared.sync.ActiveTransferClaims
 import com.syncdroid.shared.sync.activeTransferKey
@@ -84,6 +86,7 @@ class MeshFileSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(MeshWireCodec.encode(store.exportBundle()))))
         val remoteMetadata = connection.receiveSession<MeshSessionMessage.Metadata>()
         store.importBundle(MeshWireCodec.decode(remoteMetadata.bundle))
+        exchangeFolderKeys(connection)
         val chatMessages = store.chatMessages(profile.groupId)
         chatAttachments.cleanupExpired(chatMessages)
         val missingAttachments = chatAttachments.missing(chatMessages)
@@ -149,6 +152,19 @@ class MeshFileSyncSession(
         return MeshFileSyncResult(appliedChangeCount, metadataChanged)
         } finally {
             transferClaims.close()
+        }
+    }
+
+    private suspend fun exchangeFolderKeys(connection: AuthenticatedPeerConnection) {
+        val keys = DesktopFolderKeyStore(store, identity)
+        val local = store.folders(profile.groupId, identity.deviceId).mapNotNull { folder ->
+            keys.existing(folder.folderId)?.let { SessionFolderKey(it.folderId, it.keyId, it.bytes) }
+        }
+        connection.send(MeshSessionCodec.encode(MeshSessionMessage.FolderKeys(local)))
+        val remote = connection.receiveSession<MeshSessionMessage.FolderKeys>()
+        val knownFolders = store.folders(profile.groupId, identity.deviceId).mapTo(mutableSetOf(), MeshFolder::folderId)
+        remote.keys.filter { it.folderId in knownFolders }.forEach { value ->
+            keys.import(FolderKeyMaterial(value.folderId, value.keyId, value.keyBytes))
         }
     }
 

@@ -48,7 +48,7 @@ import com.syncdroid.shared.update.ReleaseUpdateService
 import com.syncdroid.shared.update.UpdateState
 import kotlinx.coroutines.launch
 
-private enum class SecondaryScreen { PowerDiscovery, FileHistory, Conflicts, SyncExceptions }
+private enum class SecondaryScreen { CloudSync, BackgroundOperation, PowerDiscovery, FileHistory, Conflicts, SyncExceptions }
 
 @Composable
 fun SyncDowsApp(
@@ -70,7 +70,9 @@ fun SyncDowsApp(
     var selectedSection by remember { mutableStateOf(preferences.selectedSection) }
     var themeMode by remember { mutableStateOf(preferences.themeMode) }
     var deviceName by remember { mutableStateOf(preferences.deviceName ?: WindowsDeviceName.current()) }
+    var cloudPolicy by remember { mutableStateOf(preferences.cloudSyncPolicy) }
     var launchAtLogin by remember { mutableStateOf(preferences.launchAtLogin) }
+    var noBackgroundService by remember { mutableStateOf(preferences.noBackgroundService) }
     var offlineUpdateImportUnlocked by remember { mutableStateOf(preferences.offlineUpdateImportUnlocked) }
     var secondaryScreen by remember { mutableStateOf<SecondaryScreen?>(null) }
     var featureNotice by remember { mutableStateOf<String?>(null) }
@@ -148,6 +150,42 @@ fun SyncDowsApp(
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
                 Box(Modifier.fillMaxSize().widthIn(max = 1_080.dp)) {
                     when (secondaryScreen) {
+                        SecondaryScreen.CloudSync -> CloudSyncSettingsScreen(
+                            policy = cloudPolicy,
+                            folders = meshState.folders,
+                            onScopeChanged = { scope ->
+                                cloudPolicy = cloudPolicy.copy(scope = scope)
+                                preferences.cloudSyncPolicy = cloudPolicy
+                            },
+                            onFolderChanged = { folderId, enabled ->
+                                cloudPolicy = cloudPolicy.withFolderEnabled(folderId, enabled)
+                                preferences.cloudSyncPolicy = cloudPolicy
+                            },
+                            accounts = meshState.cloudAccounts,
+                            busy = meshState.busy,
+                            onConnect = runtime::connectCloud,
+                            onDisconnect = runtime::disconnectCloud,
+                            onBack = { secondaryScreen = null },
+                        )
+                        SecondaryScreen.BackgroundOperation -> BackgroundOperationScreen(
+                            launchAtLogin = launchAtLogin,
+                            noBackgroundService = noBackgroundService,
+                            onLaunchAtLoginChanged = { enabled ->
+                                runCatching { WindowsStartupManager.setEnabled(enabled) }
+                                    .onSuccess {
+                                        launchAtLogin = enabled
+                                        preferences.launchAtLogin = enabled
+                                    }
+                                    .onFailure {
+                                        platformError = it.message ?: "Could not update launch at login"
+                                    }
+                            },
+                            onNoBackgroundServiceChanged = { enabled ->
+                                noBackgroundService = enabled
+                                preferences.noBackgroundService = enabled
+                            },
+                            onBack = { secondaryScreen = null },
+                        )
                         SecondaryScreen.PowerDiscovery -> PowerDiscoveryScreen(
                             intervalMinutes = discoveryInterval,
                             windowSeconds = discoveryWindow,
@@ -205,12 +243,14 @@ fun SyncDowsApp(
                                 meshName = meshState.profile?.groupName,
                                 runtimeStatus = meshState.status,
                                 busy = meshState.busy,
+                                backgroundServiceEnabled = !noBackgroundService,
                                 onSyncNow = runtime::syncNow,
                                 onRenameDevice = ::requestRename,
                                 onCloseToNotificationBar = onCloseToNotificationBar,
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
+                                cloudPolicy = cloudPolicy,
                                 onAddFolder = { showAddFolder = true },
                                 onConfigureFolder = { folderToConfigure = it },
                                 onDeclineFolder = { runtime.declineFolder(it.folderId) },
@@ -220,6 +260,10 @@ fun SyncDowsApp(
                                     }.onFailure {
                                         folderConfigurationError = it.message ?: "Could not open this folder in File Explorer"
                                     }
+                                },
+                                onCloudFolderChanged = { folderId, enabled ->
+                                    cloudPolicy = cloudPolicy.withFolderEnabled(folderId, enabled)
+                                    preferences.cloudSyncPolicy = cloudPolicy
                                 },
                             )
                             MainSection.Devices -> DevicesScreen(
@@ -296,18 +340,11 @@ fun SyncDowsApp(
                                 onOpenConflicts = { secondaryScreen = SecondaryScreen.Conflicts },
                                 exceptionCount = meshState.syncExceptions.size,
                                 onOpenExceptions = { secondaryScreen = SecondaryScreen.SyncExceptions },
+                                cloudScope = cloudPolicy.scope,
+                                onOpenCloudSettings = { secondaryScreen = SecondaryScreen.CloudSync },
                                 launchAtLogin = launchAtLogin,
-                                onLaunchAtLoginChanged = { enabled ->
-                                    runCatching { WindowsStartupManager.setEnabled(enabled) }
-                                        .onSuccess {
-                                            launchAtLogin = enabled
-                                            preferences.launchAtLogin = enabled
-                                        }
-                                        .onFailure {
-                                            platformError = it.message ?: "Could not update launch at login"
-                                        }
-                                },
-                                onFeatureRequested = { featureNotice = it },
+                                noBackgroundService = noBackgroundService,
+                                onOpenBackgroundSettings = { secondaryScreen = SecondaryScreen.BackgroundOperation },
                             )
                         }
                     }

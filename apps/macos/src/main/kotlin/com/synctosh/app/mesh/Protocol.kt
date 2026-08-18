@@ -86,6 +86,19 @@ data class MembershipEvent(
             signer, parentEventIds, version, createdAtMillis,
         )
 
+        fun createRemoveDevice(
+            groupId: String,
+            subjectDisplayName: String,
+            subjectPublicKey: PublicKey,
+            signer: DeviceSigner,
+            parentEventIds: List<String>,
+            version: VersionVector,
+            createdAtMillis: Long = System.currentTimeMillis(),
+        ) = create(
+            groupId, MembershipEventType.RemoveDevice, subjectDisplayName, subjectPublicKey,
+            signer, parentEventIds, version, createdAtMillis,
+        )
+
         private fun create(
             groupId: String,
             type: MembershipEventType,

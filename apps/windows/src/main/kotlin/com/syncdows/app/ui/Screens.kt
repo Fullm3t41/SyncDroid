@@ -46,8 +46,10 @@ import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,9 +59,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -72,7 +71,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.Modifier
@@ -83,6 +81,9 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.DragData
@@ -112,6 +113,8 @@ import java.nio.file.Path
 import com.syncdows.app.mesh.upcomingDiscoveryWindows
 import kotlinx.coroutines.delay
 import com.syncdroid.shared.update.UpdateState
+import com.syncdroid.shared.cloud.CloudSyncPolicy
+import com.syncdroid.shared.cloud.CloudSyncScope
 
 @Composable
 fun SyncScreen(
@@ -121,6 +124,7 @@ fun SyncScreen(
     meshName: String?,
     runtimeStatus: String,
     busy: Boolean,
+    backgroundServiceEnabled: Boolean,
     onSyncNow: () -> Unit,
     onRenameDevice: () -> Unit,
     onCloseToNotificationBar: () -> Unit,
@@ -146,7 +150,7 @@ fun SyncScreen(
                     OutlinedButton(onClick = onCloseToNotificationBar) {
                         Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text("Close to system tray")
+                        Text(if (backgroundServiceEnabled) "Close to system tray" else "Close SyncDows")
                     }
                     Button(
                         onClick = onSyncNow,
@@ -284,10 +288,12 @@ private fun ActiveFoldersSummary(folders: List<MeshFolder>) {
 @Composable
 fun FoldersScreen(
     folders: List<MeshFolder>,
+    cloudPolicy: CloudSyncPolicy,
     onAddFolder: () -> Unit,
     onConfigureFolder: (MeshFolder) -> Unit,
     onDeclineFolder: (MeshFolder) -> Unit,
     onOpenFolder: (MeshFolder) -> Unit,
+    onCloudFolderChanged: (String, Boolean) -> Unit,
 ) {
     var explanationExpanded by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -360,7 +366,14 @@ fun FoldersScreen(
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             folders.forEach { folder ->
-                                MeshFolderCard(folder, onConfigureFolder, onDeclineFolder, onOpenFolder)
+                                MeshFolderCard(
+                                    folder,
+                                    cloudPolicy,
+                                    onConfigureFolder,
+                                    onDeclineFolder,
+                                    onOpenFolder,
+                                    onCloudFolderChanged,
+                                )
                             }
                         }
                     }
@@ -400,9 +413,11 @@ private fun FolderGuideSection(title: String, body: String) {
 @Composable
 private fun MeshFolderCard(
     folder: MeshFolder,
+    cloudPolicy: CloudSyncPolicy,
     onConfigure: (MeshFolder) -> Unit,
     onDecline: (MeshFolder) -> Unit,
     onOpenFolder: (MeshFolder) -> Unit,
+    onCloudFolderChanged: (String, Boolean) -> Unit,
 ) {
     var expanded by remember(folder.folderId) { mutableStateOf(false) }
     val summary = when (folder.bindingState) {
@@ -425,6 +440,36 @@ private fun MeshFolderCard(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(12.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        val cloudEnabled = cloudPolicy.isEnabledFor(folder.folderId)
+        val cloudEditable = cloudPolicy.scope == CloudSyncScope.SELECTED_FOLDERS
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = cloudEditable) { onCloudFolderChanged(folder.folderId, !cloudEnabled) }
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Cloud sync", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    when (cloudPolicy.scope) {
+                        CloudSyncScope.DISABLED -> "Disabled in Settings"
+                        CloudSyncScope.SELECTED_FOLDERS -> if (cloudEnabled) "Included" else "Local mesh only"
+                        CloudSyncScope.ALL_FOLDERS -> "Included by the all-folders setting"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = cloudEnabled,
+                onCheckedChange = if (cloudEditable) {
+                    { enabled -> onCloudFolderChanged(folder.folderId, enabled) }
+                } else null,
+            )
+        }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             Button(onClick = { onConfigure(folder) }) {
@@ -517,7 +562,6 @@ private fun DeviceActions(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TrustedDeviceList(peers: List<MeshPeer>, onRemoveDevice: (String) -> Unit) {
     if (peers.isEmpty()) {
@@ -526,35 +570,25 @@ private fun TrustedDeviceList(peers: List<MeshPeer>, onRemoveDevice: (String) ->
     }
     Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Text("Mesh members", style = MaterialTheme.typography.titleMedium)
+        var pendingRemoval by remember { mutableStateOf<MeshPeer?>(null) }
         peers.sortedBy { it.name.lowercase() }.forEach { peer ->
-            val memberShape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp)
-            val dismissState = rememberSwipeToDismissBoxState(
-                confirmValueChange = { value ->
-                    if (value == SwipeToDismissBoxValue.EndToStart) {
-                        onRemoveDevice(peer.deviceId)
-                        true
-                    } else false
-                },
-                positionalThreshold = { distance -> distance * 0.45f },
-            )
-            SwipeToDismissBox(
-                modifier = Modifier.clip(memberShape),
-                state = dismissState,
-                enableDismissFromStartToEnd = false,
-                backgroundContent = {
-                    Box(
-                        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.error).padding(horizontal = 18.dp),
-                        contentAlignment = Alignment.CenterEnd,
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onError)
-                            Spacer(Modifier.width(7.dp))
-                            Text("Remove", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.SemiBold)
+            var menuExpanded by remember(peer.deviceId) { mutableStateOf(false) }
+            Box {
+                Surface(
+                    modifier = Modifier.pointerInput(peer.deviceId) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                    menuExpanded = true
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
                         }
-                    }
-                },
-            ) {
-                Surface(color = MaterialTheme.colorScheme.surface, shape = memberShape) {
+                    },
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                ) {
                     Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Surface(
                             modifier = Modifier.size(10.dp),
@@ -572,9 +606,64 @@ private fun TrustedDeviceList(peers: List<MeshPeer>, onRemoveDevice: (String) ->
                         }
                     }
                 }
+                DeleteDeviceMenu(
+                    expanded = menuExpanded,
+                    onDismiss = { menuExpanded = false },
+                    onDelete = {
+                        menuExpanded = false
+                        pendingRemoval = peer
+                    },
+                )
             }
         }
+        pendingRemoval?.let { peer ->
+            DeleteDeviceConfirmation(
+                peerName = peer.name,
+                onDismiss = { pendingRemoval = null },
+                onConfirm = {
+                    pendingRemoval = null
+                    onRemoveDevice(peer.deviceId)
+                },
+            )
+        }
     }
+}
+
+@Composable
+private fun DeleteDeviceMenu(expanded: Boolean, onDismiss: () -> Unit, onDelete: () -> Unit) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        Button(
+            onClick = onDelete,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp).fillMaxWidth(),
+        ) {
+            Icon(Icons.Rounded.Delete, contentDescription = null)
+            Spacer(Modifier.width(7.dp))
+            Text("Delete", color = MaterialTheme.colorScheme.onError)
+        }
+    }
+}
+
+@Composable
+private fun DeleteDeviceConfirmation(peerName: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete $peerName?") },
+        text = { Text("This removes the device from the entire mesh. It will need to pair again before it can reconnect.") },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) { Text("Delete", color = MaterialTheme.colorScheme.onError) }
+        },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
@@ -829,9 +918,11 @@ fun SettingsScreen(
     onOpenConflicts: () -> Unit,
     exceptionCount: Int,
     onOpenExceptions: () -> Unit,
+    cloudScope: CloudSyncScope,
+    onOpenCloudSettings: () -> Unit,
     launchAtLogin: Boolean,
-    onLaunchAtLoginChanged: (Boolean) -> Unit,
-    onFeatureRequested: (String) -> Unit,
+    noBackgroundService: Boolean,
+    onOpenBackgroundSettings: () -> Unit,
 ) {
     var aboutTapCount by remember { mutableIntStateOf(0) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -871,8 +962,12 @@ fun SettingsScreen(
                 SettingsActionRow(
                     icon = Icons.Rounded.Cloud,
                     title = "Cloud sync",
-                    detail = "Google Drive and OneDrive",
-                    onClick = { onFeatureRequested("Cloud sync") },
+                    detail = when (cloudScope) {
+                        CloudSyncScope.DISABLED -> "Off"
+                        CloudSyncScope.SELECTED_FOLDERS -> "Selected folder by folder"
+                        CloudSyncScope.ALL_FOLDERS -> "Enabled for all folders"
+                    },
+                    onClick = onOpenCloudSettings,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsActionRow(
@@ -906,14 +1001,12 @@ fun SettingsScreen(
                 SettingsActionRow(
                     icon = Icons.Rounded.Computer,
                     title = "Background operation",
-                    detail = if (launchAtLogin) "System tray · launches when you sign in" else "System tray · launch at login is off",
-                    onClick = { onLaunchAtLoginChanged(!launchAtLogin) },
-                    trailing = {
-                        Switch(
-                            checked = launchAtLogin,
-                            onCheckedChange = onLaunchAtLoginChanged,
-                        )
+                    detail = when {
+                        noBackgroundService -> "Off · closing fully quits SyncDows"
+                        launchAtLogin -> "System tray · launches when you sign in"
+                        else -> "System tray · launch at login is off"
                     },
+                    onClick = onOpenBackgroundSettings,
                 )
                     }
                 }

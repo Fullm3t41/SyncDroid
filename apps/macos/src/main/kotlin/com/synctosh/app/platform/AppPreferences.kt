@@ -4,8 +4,11 @@ import com.synctosh.app.model.MainSection
 import com.synctosh.app.model.ThemeMode
 import com.synctosh.app.mesh.normalizeDiscoveryInterval
 import com.synctosh.app.mesh.normalizeDiscoveryWindow
+import com.syncdroid.shared.cloud.CloudSyncPolicy
+import com.syncdroid.shared.cloud.CloudSyncScope
 import java.util.prefs.Preferences
 import java.util.Base64
+import com.syncdroid.shared.cloud.CloudProvider
 
 class AppPreferences {
     private val preferences = Preferences.userRoot().node("com/synctosh/app")
@@ -64,6 +67,37 @@ class AppPreferences {
             else preferences.put(KEY_DEVICE_NAME, value.trim())
         }
 
+    var launchAtLogin: Boolean
+        get() = preferences.getBoolean(KEY_LAUNCH_AT_LOGIN, false)
+        set(value) = preferences.putBoolean(KEY_LAUNCH_AT_LOGIN, value)
+
+    var noBackgroundService: Boolean
+        get() = preferences.getBoolean(KEY_NO_BACKGROUND_SERVICE, false)
+        set(value) = preferences.putBoolean(KEY_NO_BACKGROUND_SERVICE, value)
+
+    var cloudSyncPolicy: CloudSyncPolicy
+        get() = CloudSyncPolicy(
+            scope = runCatching {
+                CloudSyncScope.valueOf(preferences.get(KEY_CLOUD_SYNC_SCOPE, CloudSyncScope.DISABLED.name))
+            }.getOrDefault(CloudSyncScope.DISABLED),
+            selectedFolderIds = preferences.get(KEY_CLOUD_SELECTED_FOLDERS, "")
+                .lineSequence()
+                .filter(String::isNotBlank)
+                .toSet(),
+        )
+        set(value) {
+            preferences.put(KEY_CLOUD_SYNC_SCOPE, value.scope.name)
+            if (value.selectedFolderIds.isEmpty()) preferences.remove(KEY_CLOUD_SELECTED_FOLDERS)
+            else preferences.put(KEY_CLOUD_SELECTED_FOLDERS, value.selectedFolderIds.sorted().joinToString("\n"))
+        }
+
+    fun cloudToken(provider: CloudProvider): String? = preferences.get("cloud_token_${provider.name.lowercase()}", null)
+
+    fun setCloudToken(provider: CloudProvider, encrypted: String?) {
+        val key = "cloud_token_${provider.name.lowercase()}"
+        if (encrypted == null) preferences.remove(key) else preferences.put(key, encrypted)
+    }
+
     var lastUpdateCheckMillis: Long
         get() = preferences.getLong(KEY_LAST_UPDATE_CHECK, 0L)
         set(value) = preferences.putLong(KEY_LAST_UPDATE_CHECK, value)
@@ -106,6 +140,10 @@ class AppPreferences {
         const val KEY_ALWAYS_ON_DISCOVERY = "always_on_discovery"
         const val KEY_REGISTERED_WIFI = "registered_wifi_names"
         const val KEY_DEVICE_NAME = "device_name"
+        const val KEY_LAUNCH_AT_LOGIN = "launch_at_login"
+        const val KEY_NO_BACKGROUND_SERVICE = "no_background_service"
+        const val KEY_CLOUD_SYNC_SCOPE = "cloud_sync_scope"
+        const val KEY_CLOUD_SELECTED_FOLDERS = "cloud_selected_folders"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check_millis"
         const val KEY_OFFLINE_UPDATE_IMPORT_UNLOCKED = "offline_update_import_unlocked"
         const val KEY_PAIRING_FAILURES = "pairing_failed_attempts"

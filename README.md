@@ -20,10 +20,28 @@ SyncDroid-Mesh connects Android, macOS and Windows devices as an equal-peer mesh
 
 ## Preview
 
-| SyncDroid-Mesh · Android | SyncTosh · macOS |
-| --- | --- |
-| ![SyncDroid-Mesh local mesh sync screen](https://fullm3t41.github.io/SyncDroid-Mesh/design/screenshots/syncdroid-mesh-sync.png) | ![SyncTosh folder synchronization guide](https://fullm3t41.github.io/SyncDroid-Mesh/design/screenshots/synctosh-folders.png) |
-| ![SyncDroid-Mesh folder management screen](https://fullm3t41.github.io/SyncDroid-Mesh/design/screenshots/syncdroid-mesh-folders.png) | ![SyncTosh settings screen](https://fullm3t41.github.io/SyncDroid-Mesh/design/screenshots/synctosh-settings.png) |
+<table>
+  <thead>
+    <tr>
+      <th width="26%">SyncDroid-Mesh · Android</th>
+      <th width="74%">SyncTosh · macOS</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td width="26%" valign="top"><img src="design/screenshots/syncdroid-mesh-sync.png" alt="SyncDroid-Mesh local mesh sync screen"></td>
+      <td width="74%" valign="top"><img src="design/screenshots/synctosh-sync.png" alt="SyncTosh local mesh sync screen"></td>
+    </tr>
+    <tr>
+      <td width="26%" valign="top"><img src="design/screenshots/syncdroid-mesh-folders.png" alt="SyncDroid-Mesh folder management screen"></td>
+      <td width="74%" valign="top"><img src="design/screenshots/synctosh-chat.png" alt="SyncTosh mesh chat screen"></td>
+    </tr>
+    <tr>
+      <td width="26%"></td>
+      <td width="74%" valign="top"><img src="design/screenshots/synctosh-power-discovery.png" alt="SyncTosh power and discovery settings"></td>
+    </tr>
+  </tbody>
+</table>
 
 ## What it does
 

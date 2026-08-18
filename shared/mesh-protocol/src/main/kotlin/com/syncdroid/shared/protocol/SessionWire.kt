@@ -49,11 +49,18 @@ data class UpdateAssetDescriptor(
     val sizeBytes: Long,
 )
 
+data class SessionFolderKey(val folderId: String, val keyId: String, val keyBytes: ByteArray) {
+    override fun equals(other: Any?): Boolean = other is SessionFolderKey &&
+        folderId == other.folderId && keyId == other.keyId && keyBytes.contentEquals(other.keyBytes)
+    override fun hashCode(): Int = 31 * (31 * folderId.hashCode() + keyId.hashCode()) + keyBytes.contentHashCode()
+}
+
 sealed interface MeshSessionMessage {
     data class Metadata(val bundle: ByteArray) : MeshSessionMessage
     data class Catalog(val folders: List<FolderClock>) : MeshSessionMessage
     data class IndexBatch(val updates: List<FolderIndexUpdate>) : MeshSessionMessage
     data class TransferPlan(val requestCount: Int) : MeshSessionMessage
+    data class FolderKeys(val keys: List<SessionFolderKey>) : MeshSessionMessage
     data object PhaseDone : MeshSessionMessage
     data class UpdateInventory(val assets: List<UpdateAssetDescriptor>) : MeshSessionMessage
     data class UpdateRequest(val sha256: String, val offset: Long, val maxBytes: Int) : MeshSessionMessage
@@ -98,6 +105,16 @@ object MeshSessionWireCodec {
                     require(message.requestCount in 0..MAX_REQUESTS)
                     output.writeByte(TRANSFER_PLAN)
                     output.writeInt(message.requestCount)
+                }
+                is MeshSessionMessage.FolderKeys -> {
+                    output.writeByte(FOLDER_KEYS)
+                    output.writeCount(message.keys.size)
+                    message.keys.forEach { key ->
+                        require(key.keyBytes.size == 32) { "Folder keys must be 256 bits" }
+                        output.writeString(key.folderId)
+                        output.writeString(key.keyId)
+                        output.writeData(key.keyBytes)
+                    }
                 }
                 MeshSessionMessage.PhaseDone -> output.writeByte(PHASE_DONE)
                 is MeshSessionMessage.UpdateInventory -> {
@@ -145,6 +162,9 @@ object MeshSessionWireCodec {
             })
             INDEX_BATCH -> MeshSessionMessage.IndexBatch(List(input.readCount()) { input.readUpdate() })
             TRANSFER_PLAN -> MeshSessionMessage.TransferPlan(input.readInt().also { require(it in 0..MAX_REQUESTS) })
+            FOLDER_KEYS -> MeshSessionMessage.FolderKeys(List(input.readCount()) {
+                SessionFolderKey(input.readString(), input.readString(), input.readData().also { require(it.size == 32) })
+            })
             PHASE_DONE -> MeshSessionMessage.PhaseDone
             UPDATE_INVENTORY -> MeshSessionMessage.UpdateInventory(List(input.readCount()) { input.readUpdateAsset() })
             UPDATE_REQUEST -> MeshSessionMessage.UpdateRequest(
@@ -269,6 +289,7 @@ object MeshSessionWireCodec {
     private const val UPDATE_REQUEST = 7
     private const val UPDATE_CHUNK = 8
     private const val UPDATE_PHASE_DONE = 9
+    private const val FOLDER_KEYS = 10
     private const val ERROR = 127
     private const val MAX_ITEMS = 50_000
     private const val MAX_REQUESTS = 1_000_000

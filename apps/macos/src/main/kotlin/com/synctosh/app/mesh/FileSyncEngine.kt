@@ -82,6 +82,22 @@ class FileSyncEngine(
         }
     }
 
+    fun buildFullUpdate(folderId: String): FolderIndexUpdate? {
+        val folder = store.folders(profile.groupId, identity.deviceId).firstOrNull { it.folderId == folderId } ?: return null
+        val root = configuredRoot(folderId) ?: return null
+        val local = store.folderIndexState(folderId, identity.deviceId) ?: return null
+        val versions = store.fileVersions(folderId).sortedBy(FileVersion::localSequence)
+        require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one cloud manifest" }
+        return FolderIndexUpdate(
+            folder.folderId,
+            local.indexEpoch,
+            0,
+            local.maxSequence,
+            true,
+            versions.map { it.toIndexedRecord(root) },
+        )
+    }
+
     fun receiveIndexes(remoteDeviceId: String, updates: List<FolderIndexUpdate>): List<FileSyncPlan> {
         val plans = mutableListOf<FileSyncPlan>()
         updates.forEach { update ->

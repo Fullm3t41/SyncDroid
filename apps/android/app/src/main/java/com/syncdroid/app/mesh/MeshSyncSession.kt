@@ -11,6 +11,7 @@ import com.syncdroid.app.storage.LowStorageApprovalStore
 import com.syncdroid.app.storage.StorageCapacity
 import com.syncdroid.app.storage.StorageCapacityGuard
 import com.syncdroid.app.storage.StorageSyncWarning
+import com.syncdroid.app.cloud.AndroidFolderKeyStore
 import com.syncdroid.app.sync.AtomicFileApplier
 import com.syncdroid.app.sync.BlockManifest
 import com.syncdroid.app.sync.BlockManifestBuilder
@@ -33,6 +34,7 @@ import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.WholeFilePeerClient
 import com.syncdroid.shared.protocol.FileTransferMessage
 import com.syncdroid.shared.protocol.MeshSessionMessage
+import com.syncdroid.shared.protocol.SessionFolderKey
 import com.syncdroid.shared.sync.ActiveTransferClaims
 import com.syncdroid.shared.sync.activeTransferKey
 import com.syncdroid.shared.update.MeshUpdateCache
@@ -62,6 +64,7 @@ class MeshSyncSession(
     private val storageCapacity = StorageCapacityGuard(appContext)
     private val lowStorageApprovals = LowStorageApprovalStore(appContext)
     private val chatAttachments = ChatAttachmentStore(appContext, database)
+    private val folderKeys = AndroidFolderKeyStore(appContext, syncDao)
 
     suspend fun run(connection: AuthenticatedPeerConnection): MeshSyncResult {
         val remoteDeviceId = connection.peer.deviceId
@@ -70,6 +73,7 @@ class MeshSyncSession(
         }
 
         val receiveResult = exchangeMetadata(connection)
+        exchangeFolderKeys(connection)
         chatAttachments.cleanupExpired(groupId)
         val missingAttachments = chatAttachments.missing(
             database.chatDao().recentMessages(groupId, MAX_REPLICATED_CHAT_ATTACHMENTS)
@@ -147,6 +151,18 @@ class MeshSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(local)))
         val remote = connection.receiveSession<MeshSessionMessage.Metadata>()
         return replication.receive(MeshWireCodec.decode(remote.bundle))
+    }
+
+    private suspend fun exchangeFolderKeys(connection: AuthenticatedPeerConnection) {
+        val local = syncDao.folderKeys().map { stored ->
+            folderKeys.getOrCreate(stored.folderId).let { SessionFolderKey(it.folderId, it.keyId, it.bytes) }
+        }
+        connection.send(MeshSessionCodec.encode(MeshSessionMessage.FolderKeys(local)))
+        val remote = connection.receiveSession<MeshSessionMessage.FolderKeys>()
+        val knownFolders = syncDao.enabledFolders(groupId).mapTo(mutableSetOf()) { it.folderId }
+        remote.keys.filter { it.folderId in knownFolders }.forEach { value ->
+            folderKeys.import(value.folderId, value.keyId, value.keyBytes)
+        }
     }
 
     private suspend fun scanConfiguredFolders() {

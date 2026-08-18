@@ -183,7 +183,7 @@ class BonjourDiscovery(private val localDeviceId: String) : Closeable {
             port,
             0,
             0,
-            mapOf("id" to localDeviceId, "v" to "1"),
+            mapOf("id" to localDeviceId, "v" to "2"),
         )
         mdns.registerService(info)
         meshService = info

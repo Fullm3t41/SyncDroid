@@ -32,14 +32,15 @@ import com.syncdroid.shared.update.UpdatePlatform
 fun main(args: Array<String>) {
     val instanceGuard = SingleInstanceGuard.acquire() ?: return
     try {
-        runApplication(instanceGuard, startHidden = "--background" in args)
+        runApplication(instanceGuard, backgroundRequested = "--background" in args)
     } finally {
         instanceGuard.close()
     }
 }
 
-private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Boolean) = application {
+private fun runApplication(instanceGuard: SingleInstanceGuard, backgroundRequested: Boolean) = application {
     val preferences = remember { AppPreferences() }
+    val startHidden = backgroundRequested && !preferences.noBackgroundService
     val updateService = remember {
         ReleaseUpdateService(
             currentVersion = UpdateConfig.CURRENT_VERSION,
@@ -86,10 +87,20 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
 
     instanceGuard.onActivate(::showWindow)
 
-    fun closeToNotificationBar() {
+    fun quitApplication() {
         saveWindowState()
-        windowVisible = false
-        meshRuntime.setWindowForeground(false)
+        meshRuntime.close()
+        exitApplication()
+    }
+
+    fun closeToNotificationBar() {
+        if (preferences.noBackgroundService) {
+            quitApplication()
+        } else {
+            saveWindowState()
+            windowVisible = false
+            meshRuntime.setWindowForeground(false)
+        }
     }
 
     fun updateDiscoveryInterval(minutes: Int) {
@@ -108,12 +119,6 @@ private fun runApplication(instanceGuard: SingleInstanceGuard, startHidden: Bool
         alwaysOnDiscovery = enabled
         preferences.alwaysOnDiscovery = enabled
         meshRuntime.discoveryScheduleChanged()
-    }
-
-    fun quitApplication() {
-        saveWindowState()
-        meshRuntime.close()
-        exitApplication()
     }
 
     StyledSystemTrayIcon(

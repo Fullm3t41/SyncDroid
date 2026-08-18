@@ -159,7 +159,7 @@ class MeshNsdDiscovery(
         const val SERVICE_TYPE = "_syncdroid._tcp."
         const val ATTRIBUTE_DEVICE_ID = "id"
         const val ATTRIBUTE_PROTOCOL = "v"
-        const val PROTOCOL_MAJOR = 1
+        const val PROTOCOL_MAJOR = 2
         const val TAG = "SyncDroidNsd"
     }
 }

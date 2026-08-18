@@ -123,7 +123,7 @@ class MeshLanDiscovery(
 
     private companion object {
         const val DISCOVERY_PORT = 45_783
-        const val PROTOCOL_MAJOR = 1
+        const val PROTOCOL_MAJOR = 2
         const val QUERY = "SDMQ1"
         const val ANNOUNCEMENT = "SDMA1"
         const val RECEIVE_TIMEOUT_MILLIS = 1_000

@@ -42,13 +42,14 @@ import com.synctosh.app.mesh.MeshFolder
 import com.synctosh.app.platform.AppPreferences
 import com.synctosh.app.platform.MacDeviceName
 import com.synctosh.app.platform.MacFolderPicker
+import com.synctosh.app.platform.MacStartupManager
 import com.synctosh.app.platform.UpdateConfig
 import java.nio.file.Path
 import com.syncdroid.shared.update.ReleaseUpdateService
 import com.syncdroid.shared.update.UpdateState
 import kotlinx.coroutines.launch
 
-private enum class SecondaryScreen { PowerDiscovery, FileHistory }
+private enum class SecondaryScreen { CloudSync, BackgroundOperation, PowerDiscovery, FileHistory }
 
 @Composable
 fun SyncToshApp(
@@ -70,6 +71,11 @@ fun SyncToshApp(
     var selectedSection by remember { mutableStateOf(preferences.selectedSection) }
     var themeMode by remember { mutableStateOf(preferences.themeMode) }
     var deviceName by remember { mutableStateOf(preferences.deviceName ?: MacDeviceName.current()) }
+    var cloudPolicy by remember { mutableStateOf(preferences.cloudSyncPolicy) }
+    var launchAtLogin by remember {
+        mutableStateOf(MacStartupManager.isEnabled().also { preferences.launchAtLogin = it })
+    }
+    var noBackgroundService by remember { mutableStateOf(preferences.noBackgroundService) }
     var offlineUpdateImportUnlocked by remember { mutableStateOf(preferences.offlineUpdateImportUnlocked) }
     var secondaryScreen by remember { mutableStateOf<SecondaryScreen?>(null) }
     var featureNotice by remember { mutableStateOf<String?>(null) }
@@ -80,6 +86,7 @@ fun SyncToshApp(
     var showPairingOffer by remember { mutableStateOf(false) }
     var folderToConfigure by remember { mutableStateOf<MeshFolder?>(null) }
     var folderConfigurationError by remember { mutableStateOf<String?>(null) }
+    var platformError by remember { mutableStateOf<String?>(null) }
     var dismissedWifiSuggestion by remember { mutableStateOf<String?>(null) }
     val promptedFolderIds = remember { mutableSetOf<String>() }
     val suggestedWifi = meshState.currentWifiName?.takeIf { current ->
@@ -141,6 +148,42 @@ fun SyncToshApp(
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
                 Box(Modifier.fillMaxSize().widthIn(max = 1_080.dp)) {
                     when (secondaryScreen) {
+                        SecondaryScreen.CloudSync -> CloudSyncSettingsScreen(
+                            policy = cloudPolicy,
+                            folders = meshState.folders,
+                            onScopeChanged = { scope ->
+                                cloudPolicy = cloudPolicy.copy(scope = scope)
+                                preferences.cloudSyncPolicy = cloudPolicy
+                            },
+                            onFolderChanged = { folderId, enabled ->
+                                cloudPolicy = cloudPolicy.withFolderEnabled(folderId, enabled)
+                                preferences.cloudSyncPolicy = cloudPolicy
+                            },
+                            accounts = meshState.cloudAccounts,
+                            busy = meshState.busy,
+                            onConnect = runtime::connectCloud,
+                            onDisconnect = runtime::disconnectCloud,
+                            onBack = { secondaryScreen = null },
+                        )
+                        SecondaryScreen.BackgroundOperation -> BackgroundOperationScreen(
+                            launchAtLogin = launchAtLogin,
+                            noBackgroundService = noBackgroundService,
+                            onLaunchAtLoginChanged = { enabled ->
+                                runCatching { MacStartupManager.setEnabled(enabled) }
+                                    .onSuccess {
+                                        launchAtLogin = enabled
+                                        preferences.launchAtLogin = enabled
+                                    }
+                                    .onFailure {
+                                        platformError = it.message ?: "Could not update launch at login"
+                                    }
+                            },
+                            onNoBackgroundServiceChanged = { enabled ->
+                                noBackgroundService = enabled
+                                preferences.noBackgroundService = enabled
+                            },
+                            onBack = { secondaryScreen = null },
+                        )
                         SecondaryScreen.PowerDiscovery -> PowerDiscoveryScreen(
                             intervalMinutes = discoveryInterval,
                             windowSeconds = discoveryWindow,
@@ -174,12 +217,14 @@ fun SyncToshApp(
                                 meshName = meshState.profile?.groupName,
                                 runtimeStatus = meshState.status,
                                 busy = meshState.busy,
+                                backgroundServiceEnabled = !noBackgroundService,
                                 onSyncNow = runtime::syncNow,
                                 onRenameDevice = ::requestRename,
                                 onCloseToNotificationBar = onCloseToNotificationBar,
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
+                                cloudPolicy = cloudPolicy,
                                 onAddFolder = { featureNotice = "Folder access" },
                                 onConfigureFolder = { folderToConfigure = it },
                                 onDeclineFolder = { runtime.declineFolder(it.folderId) },
@@ -189,6 +234,10 @@ fun SyncToshApp(
                                     }.onFailure {
                                         folderConfigurationError = it.message ?: "Could not open this folder in Finder"
                                     }
+                                },
+                                onCloudFolderChanged = { folderId, enabled ->
+                                    cloudPolicy = cloudPolicy.withFolderEnabled(folderId, enabled)
+                                    preferences.cloudSyncPolicy = cloudPolicy
                                 },
                             )
                             MainSection.Devices -> DevicesScreen(
@@ -204,6 +253,7 @@ fun SyncToshApp(
                                     showJoinMesh = true
                                 },
                                 onRenameDevice = ::requestRename,
+                                onRemoveDevice = runtime::removeDevice,
                                 hasMesh = meshState.profile != null,
                             )
                             MainSection.Chat -> ChatScreen(
@@ -259,7 +309,11 @@ fun SyncToshApp(
                                 },
                                 onOpenPowerSettings = { secondaryScreen = SecondaryScreen.PowerDiscovery },
                                 onOpenFileHistory = { secondaryScreen = SecondaryScreen.FileHistory },
-                                onFeatureRequested = { featureNotice = it },
+                                cloudScope = cloudPolicy.scope,
+                                onOpenCloudSettings = { secondaryScreen = SecondaryScreen.CloudSync },
+                                launchAtLogin = launchAtLogin,
+                                noBackgroundService = noBackgroundService,
+                                onOpenBackgroundSettings = { secondaryScreen = SecondaryScreen.BackgroundOperation },
                             )
                         }
                     }
@@ -401,6 +455,15 @@ fun SyncToshApp(
                 title = { Text("Folder configuration needs attention") },
                 text = { Text(error) },
                 confirmButton = { TextButton(onClick = { folderConfigurationError = null }) { Text("Done") } },
+            )
+        }
+
+        platformError?.let { error ->
+            AlertDialog(
+                onDismissRequest = { platformError = null },
+                title = { Text("Mac setting needs attention") },
+                text = { Text(error) },
+                confirmButton = { TextButton(onClick = { platformError = null }) { Text("Done") } },
             )
         }
 

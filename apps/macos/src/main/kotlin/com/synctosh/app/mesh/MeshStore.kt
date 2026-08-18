@@ -122,6 +122,12 @@ data class FileHistoryEvent(
     val recoveredAtMillis: Long?,
 )
 
+data class StoredFolderKey(
+    val folderId: String,
+    val keyId: String,
+    val encryptedKey: String,
+)
+
 private data class StoredFolder(
     val folderId: String,
     val groupId: String,
@@ -416,6 +422,31 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     @Synchronized
     fun configuredFolders(groupId: String, localDeviceId: String): List<MeshFolder> =
         folders(groupId, localDeviceId).filter { it.bindingState == LocalFolderBindingState.CONFIGURED && it.localPath != null }
+
+    @Synchronized
+    fun storedFolderKey(folderId: String): StoredFolderKey? = connection.prepareStatement(
+        "SELECT folder_id, key_id, encrypted_key FROM folder_keys WHERE folder_id = ? LIMIT 1",
+    ).use { statement ->
+        statement.setString(1, folderId)
+        statement.executeQuery().use { rows ->
+            if (rows.next()) StoredFolderKey(rows.getString(1), rows.getString(2), rows.getString(3)) else null
+        }
+    }
+
+    @Synchronized
+    fun saveFolderKey(value: StoredFolderKey) {
+        require(meshFolderExists(value.folderId)) { "Unknown mesh folder" }
+        connection.prepareStatement(
+            """INSERT INTO folder_keys(folder_id, key_id, encrypted_key, updated_at_millis)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(folder_id) DO UPDATE SET
+                   key_id = excluded.key_id, encrypted_key = excluded.encrypted_key,
+                   updated_at_millis = excluded.updated_at_millis""",
+        ).use {
+            it.setString(1, value.folderId); it.setString(2, value.keyId); it.setString(3, value.encryptedKey)
+            it.setLong(4, System.currentTimeMillis()); it.executeUpdate()
+        }
+    }
 
     @Synchronized
     fun fileVersions(folderId: String): List<FileVersion> = connection.prepareStatement(
@@ -1258,6 +1289,11 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                     updated_at_millis INTEGER NOT NULL, version_json TEXT NOT NULL,
                     last_event_id TEXT NOT NULL, PRIMARY KEY(folder_id, relative_path))""",
             )
+            statement.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS folder_keys(
+                    folder_id TEXT PRIMARY KEY, key_id TEXT NOT NULL,
+                    encrypted_key TEXT NOT NULL, updated_at_millis INTEGER NOT NULL)""",
+            )
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_versions_sequence ON file_versions(folder_id, local_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_remote_file_versions_sequence ON remote_file_versions(folder_id, device_id, remote_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_created ON file_history(created_at_millis)")
@@ -1272,7 +1308,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             if ("attachment_expires_at_millis" !in chatColumns) statement.executeUpdate("ALTER TABLE chat_messages ADD COLUMN attachment_expires_at_millis INTEGER")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_chat_messages_group ON chat_messages(group_id, created_at_millis, message_id)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_sync_exception_events_group ON sync_exception_events(group_id, created_at_millis, event_id)")
-            statement.executeUpdate("UPDATE schema_info SET version = 7 WHERE version < 7")
+            statement.executeUpdate("UPDATE schema_info SET version = 8 WHERE version < 8")
         }
     }
 

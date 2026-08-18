@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.synctosh"
-version = "0.2.2"
+version = "1.2.3"
 
 kotlin {
     jvmToolchain(17)
@@ -34,11 +34,11 @@ compose.desktop {
         mainClass = "com.synctosh.app.MainKt"
 
         nativeDistributions {
-            modules("java.sql", "java.naming", "java.logging", "java.xml", "jdk.crypto.ec")
+            modules("java.sql", "java.naming", "java.logging", "java.xml", "java.net.http", "jdk.crypto.ec")
             targetFormats(TargetFormat.Dmg)
             packageName = "SyncTosh"
             // jpackage requires the first bundle-version component to be non-zero.
-            packageVersion = "1.2.2"
+            packageVersion = "1.2.3"
             description = "Apple Silicon local-first peer-to-peer folder synchronization for SyncDroid-Mesh"
             vendor = "Fullm3t41"
 

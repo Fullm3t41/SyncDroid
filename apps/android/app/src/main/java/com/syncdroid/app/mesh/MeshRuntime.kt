@@ -167,7 +167,7 @@ class MeshRuntime(
                 }
                 val trustedIds = database.meshDao().trustedDevices(groupId)
                     .mapTo(mutableSetOf()) { it.deviceId }
-                val eligible = peers.filterValues { it.protocolMajor == 1 && it.deviceId in trustedIds }
+                val eligible = peers.filterValues { it.protocolMajor == 2 && it.deviceId in trustedIds }
                 onEvent(MeshRuntimeEvent.PresenceChanged(eligible.keys))
                 val remainingFanout = (ROUTING_FANOUT - initialContacted.size).coerceAtLeast(0)
                 val targets = initialMeshFanoutTargets(identity.deviceId, eligible.keys, ROUTING_FANOUT)
@@ -185,7 +185,7 @@ class MeshRuntime(
                 val trustedIds = database.meshDao().trustedDevices(groupId)
                     .mapTo(mutableSetOf()) { it.deviceId }
                 val available = latestPeers.filterValues {
-                    it.protocolMajor == 1 && it.deviceId in trustedIds
+                    it.protocolMajor == 2 && it.deviceId in trustedIds
                 }
                 val targets = propagationFanoutTargets(
                     localDeviceId = identity.deviceId,

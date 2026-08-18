@@ -30,8 +30,10 @@ import com.syncdroid.shared.update.LastUpdateCheckStore
 import com.syncdroid.shared.update.ReleaseUpdateService
 import com.syncdroid.shared.update.UpdatePlatform
 
-fun main() = application {
+fun main(args: Array<String>) = application {
+    val backgroundRequested = "--background" in args
     val preferences = remember { AppPreferences() }
+    val startHidden = backgroundRequested && !preferences.noBackgroundService
     val updateService = remember {
         ReleaseUpdateService(
             currentVersion = UpdateConfig.CURRENT_VERSION,
@@ -46,11 +48,13 @@ fun main() = application {
             preferences,
             deviceName = { preferences.deviceName ?: MacDeviceName.current() },
             updateCache = updateService,
-        )
+        ).also {
+            if (startHidden) it.setWindowForeground(false)
+        }
     }
     LaunchedEffect(updateService) { updateService.runDailyChecks() }
     val meshState by meshRuntime.state.collectAsState()
-    var windowVisible by remember { mutableStateOf(true) }
+    var windowVisible by remember { mutableStateOf(!startHidden) }
     var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
     var discoveryWindow by remember { mutableLongStateOf(preferences.discoveryWindowSeconds) }
     var alwaysOnDiscovery by remember { mutableStateOf(preferences.alwaysOnDiscovery) }
@@ -60,6 +64,7 @@ fun main() = application {
         height = preferences.windowHeight.dp,
     )
     val appIcon = painterResource("icons/synctosh.png")
+    val trayIcon = painterResource("icons/synctosh-tray.png")
 
     fun saveWindowState() {
         preferences.windowWidth = windowState.size.width.value
@@ -73,8 +78,13 @@ fun main() = application {
 
     fun closeToNotificationBar() {
         saveWindowState()
-        windowVisible = false
-        meshRuntime.setWindowForeground(false)
+        if (preferences.noBackgroundService) {
+            meshRuntime.close()
+            exitApplication()
+        } else {
+            windowVisible = false
+            meshRuntime.setWindowForeground(false)
+        }
     }
 
     fun updateDiscoveryInterval(minutes: Int) {
@@ -96,7 +106,7 @@ fun main() = application {
     }
 
     Tray(
-        icon = appIcon,
+        icon = trayIcon,
         tooltip = "SyncTosh · ${meshState.status}",
         onAction = ::showWindow,
         menu = {
