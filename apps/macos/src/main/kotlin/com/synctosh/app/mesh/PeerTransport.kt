@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import com.syncdroid.shared.protocol.PairingCompletionMessage
 
@@ -106,6 +107,7 @@ class MeshPeerServer(
     private val running = AtomicBoolean(false)
     private var server: SSLServerSocket? = null
     private var scope: CoroutineScope? = null
+    private var lifecycleJob: Job? = null
     val port get() = server?.localPort ?: 0
 
     fun start(): Int {
@@ -114,6 +116,7 @@ class MeshPeerServer(
         server = socket
         val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = serverScope
+        lifecycleJob = serverScope.coroutineContext[Job]
         serverScope.launch {
             while (isActive && running.get()) {
                 val accepted = runCatching { socket.accept() as SSLSocket }.getOrElse {
@@ -135,6 +138,11 @@ class MeshPeerServer(
 
     override fun close() {
         running.set(false); runCatching { server?.close() }; scope?.cancel(); server = null; scope = null
+    }
+
+    suspend fun awaitClosed() {
+        lifecycleJob?.join()
+        lifecycleJob = null
     }
 }
 

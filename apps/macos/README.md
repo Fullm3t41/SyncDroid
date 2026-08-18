@@ -32,6 +32,16 @@ The SyncTosh icon is derived from the SyncDroid-Mesh artwork, with a macOS-inspi
 - Open configured folders directly in Finder
 - Menu-bar background operation with midnight-aligned discovery intervals and configurable windows
 
+## Background process model
+
+SyncTosh uses two mutually exclusive mesh-runtime modes:
+
+- The menu-bar worker runs without loading Compose or Skia. It owns scheduled synchronization while the window is closed.
+- Opening SyncTosh stops new background sessions, lets any authenticated transfer finish, closes the worker runtime, and launches the Compose window in a separate process.
+- Closing the window releases the Compose process and returns mesh ownership to the worker. The mesh database is therefore opened by only one runtime at a time.
+- Worker control is restricted to an authenticated loopback socket whose token file is owner-readable only.
+- UDP fallback discovery, pairing broadcasts, and Bonjour are fully closed outside foreground use, always-on mode, or a scheduled discovery window. The low-frequency Wi-Fi check remains active so the worker can recognize a registered network.
+
 ## Development
 
 ```bash

@@ -3,7 +3,14 @@ package com.synctosh.app.platform
 import java.nio.file.Path
 
 object MacAppPaths {
-    val updates: Path by lazy {
-        Path.of(System.getProperty("user.home"), "Library", "Caches", "SyncTosh", "updates")
+    private val cacheRoot: Path by lazy {
+        Path.of(System.getProperty("user.home"), "Library", "Caches", "SyncTosh")
     }
+
+    val updates: Path by lazy {
+        cacheRoot.resolve("updates")
+    }
+
+    val workerEndpoint: Path by lazy { cacheRoot.resolve("worker.endpoint") }
+    val workerLog: Path by lazy { cacheRoot.resolve("worker-ui.log") }
 }

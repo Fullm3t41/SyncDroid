@@ -54,12 +54,20 @@
             android:name=".update.AndroidUpdateFileProvider"
             android:authorities="${applicationId}.updates"
             android:exported="false"
-            android:grantUriPermissions="true" />
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
         <provider
             android:name=".mesh.ChatAttachmentFileProvider"
             android:authorities="${applicationId}.chat-attachments"
             android:exported="false"
-            android:grantUriPermissions="true" />
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/chat_attachment_paths" />
+        </provider>
     </application>
 
 </manifest>

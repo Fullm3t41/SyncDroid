@@ -1,6 +1,7 @@
 package com.syncdroid.app.update
 
 import android.content.Context
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -11,14 +12,14 @@ import java.nio.file.Path
 class AndroidUpdateFileProvider : FileProvider(R.xml.update_paths)
 
 object AndroidUpdateInstaller {
-    fun install(context: Context, installer: Path) {
+    fun install(context: Context, installer: Path): Result<Unit> = runCatching {
         require(installer.toFile().isFile) { "The downloaded APK is unavailable" }
         if (!context.packageManager.canRequestPackageInstalls()) {
             context.startActivity(Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:${context.packageName}"),
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            return
+            return@runCatching
         }
         val uri = FileProvider.getUriForFile(
             context,
@@ -27,6 +28,7 @@ object AndroidUpdateInstaller {
         )
         context.startActivity(Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
             data = uri
+            clipData = ClipData.newRawUri("SyncDroid-Mesh update", uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         })
     }

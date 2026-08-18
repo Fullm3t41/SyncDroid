@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -32,49 +33,64 @@ data class LanMeshPeer(
 class MeshLanDiscovery(
     private val localDeviceId: String,
     groupId: String,
+    private val discoveryPort: Int = DISCOVERY_PORT,
 ) : Closeable {
     private val groupTag = meshLanGroupTag(groupId)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val socket = DatagramSocket(null).apply {
-        reuseAddress = true
-        broadcast = true
-        soTimeout = RECEIVE_TIMEOUT_MILLIS
-        bind(InetSocketAddress(DISCOVERY_PORT))
-    }
     private val mutablePeers = MutableStateFlow<Map<String, LanMeshPeer>>(emptyMap())
     val peers: StateFlow<Map<String, LanMeshPeer>> = mutablePeers
     @Volatile private var advertisedPort: Int? = null
+    @Volatile private var socket: DatagramSocket? = null
+    private var receiveJob: Job? = null
+    private var announcementJob: Job? = null
+    private var closed = false
+    internal val isRunning: Boolean get() = socket != null
 
-    init {
-        scope.launch { receiveLoop() }
-        scope.launch {
-            while (isActive) {
-                pruneExpired()
-                if (advertisedPort != null) broadcast(QUERY)
-                advertisedPort?.let { broadcast(announcement(it)) }
-                delay(ANNOUNCEMENT_INTERVAL_MILLIS)
-            }
-        }
-    }
-
+    @Synchronized
     fun start(tcpPort: Int) {
         require(tcpPort in 1..65_535)
+        check(!closed) { "Mesh discovery is closed" }
         advertisedPort = tcpPort
+        if (socket == null) {
+            val activeSocket = DatagramSocket(null).apply {
+                reuseAddress = true
+                broadcast = true
+                soTimeout = RECEIVE_TIMEOUT_MILLIS
+                bind(InetSocketAddress(discoveryPort))
+            }
+            socket = activeSocket
+            receiveJob = scope.launch { receiveLoop(activeSocket) }
+            announcementJob = scope.launch {
+                while (isActive) {
+                    pruneExpired()
+                    if (advertisedPort != null) broadcast(QUERY)
+                    advertisedPort?.let { broadcast(announcement(it)) }
+                    delay(ANNOUNCEMENT_INTERVAL_MILLIS)
+                }
+            }
+        }
         broadcast(QUERY)
         broadcast(announcement(tcpPort))
     }
 
+    @Synchronized
     fun stop() {
         advertisedPort = null
+        socket?.close()
+        socket = null
+        receiveJob?.cancel()
+        receiveJob = null
+        announcementJob?.cancel()
+        announcementJob = null
         mutablePeers.value = emptyMap()
     }
 
-    private fun receiveLoop() {
+    private fun receiveLoop(activeSocket: DatagramSocket) {
         val buffer = ByteArray(512)
-        while (!socket.isClosed) {
+        while (!activeSocket.isClosed) {
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
-                socket.receive(packet)
+                activeSocket.receive(packet)
                 val message = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
                 when {
                     message == "$QUERY|$groupTag" -> advertisedPort?.let { send(announcement(it), packet.address) }
@@ -83,10 +99,16 @@ class MeshLanDiscovery(
             } catch (_: SocketTimeoutException) {
                 pruneExpired()
             } catch (_: Throwable) {
-                if (socket.isClosed) return
+                if (activeSocket.isClosed) return
             }
         }
     }
+
+    /*
+     * The socket is deliberately created by start() and closed by stop(). A
+     * dormant discovery instance therefore owns no UDP descriptor or polling
+     * coroutine between scheduled windows.
+     */
 
     private fun acceptAnnouncement(message: String, source: InetAddress) {
         val parts = message.split('|')
@@ -106,7 +128,7 @@ class MeshLanDiscovery(
     }
     private fun send(message: String, address: InetAddress) = runCatching {
         val bytes = message.toByteArray(StandardCharsets.UTF_8)
-        socket.send(DatagramPacket(bytes, bytes.size, address, DISCOVERY_PORT))
+        socket?.send(DatagramPacket(bytes, bytes.size, address, discoveryPort))
     }.getOrNull()
 
     private fun pruneExpired() {
@@ -114,11 +136,12 @@ class MeshLanDiscovery(
         mutablePeers.value = mutablePeers.value.filterValues { it.lastSeenAtMillis >= cutoff }
     }
 
+    @Synchronized
     override fun close() {
-        advertisedPort = null
-        socket.close()
+        if (closed) return
+        stop()
+        closed = true
         scope.cancel()
-        mutablePeers.value = emptyMap()
     }
 
     private companion object {

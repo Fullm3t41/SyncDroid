@@ -20,6 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -40,21 +41,37 @@ data class DiscoveredPeer(
 )
 
 /** Android-compatible UDP pairing discovery fallback. */
-class PairingLanDiscovery(private val localDeviceId: String) : Closeable {
+class PairingLanDiscovery(
+    private val localDeviceId: String,
+    private val discoveryPort: Int = PAIRING_PORT,
+) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val socket = DatagramSocket(null).apply {
-        reuseAddress = true
-        broadcast = true
-        soTimeout = 1_000
-        bind(InetSocketAddress(PAIRING_PORT))
-    }
     private val mutableOffers = MutableStateFlow<Map<String, PairingOffer>>(emptyMap())
     val offers: StateFlow<Map<String, PairingOffer>> = mutableOffers
     @Volatile private var localOffer: LocalOffer? = null
+    @Volatile private var socket: DatagramSocket? = null
+    private var receiveJob: Job? = null
+    private var broadcastJob: Job? = null
+    private var closed = false
+    internal val isRunning: Boolean get() = socket != null
 
-    init {
-        scope.launch { receiveLoop() }
-        scope.launch {
+    @Synchronized
+    fun setEnabled(enabled: Boolean) {
+        if (closed) return
+        if (!enabled) {
+            stopSocket()
+            return
+        }
+        if (socket != null) return
+        val activeSocket = DatagramSocket(null).apply {
+            reuseAddress = true
+            broadcast = true
+            soTimeout = 1_000
+            bind(InetSocketAddress(discoveryPort))
+        }
+        socket = activeSocket
+        receiveJob = scope.launch { receiveLoop(activeSocket) }
+        broadcastJob = scope.launch {
             while (isActive) {
                 sendBroadcast(DISCOVER.toByteArray(StandardCharsets.UTF_8))
                 localOffer?.let { sendBroadcast(it.message().toByteArray(StandardCharsets.UTF_8)) }
@@ -70,12 +87,12 @@ class PairingLanDiscovery(private val localDeviceId: String) : Closeable {
 
     fun stopAdvertising() { localOffer = null }
 
-    private fun receiveLoop() {
+    private fun receiveLoop(activeSocket: DatagramSocket) {
         val buffer = ByteArray(512)
-        while (!socket.isClosed) {
+        while (!activeSocket.isClosed) {
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
-                socket.receive(packet)
+                activeSocket.receive(packet)
                 val message = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
                 when {
                     message == DISCOVER -> localOffer?.let {
@@ -86,7 +103,7 @@ class PairingLanDiscovery(private val localDeviceId: String) : Closeable {
             } catch (_: SocketTimeoutException) {
                 // Periodically observe closure.
             } catch (_: Throwable) {
-                if (socket.isClosed) return
+                if (activeSocket.isClosed) return
             }
         }
     }
@@ -100,12 +117,30 @@ class PairingLanDiscovery(private val localDeviceId: String) : Closeable {
         mutableOffers.value = mutableOffers.value + (invitation to PairingOffer(invitation, device, source, port, "LAN pairing"))
     }
 
-    private fun sendBroadcast(bytes: ByteArray) = broadcastAddresses().forEach { send(bytes, it, PAIRING_PORT) }
+    private fun sendBroadcast(bytes: ByteArray) = broadcastAddresses().forEach { send(bytes, it, discoveryPort) }
     private fun send(bytes: ByteArray, address: InetAddress, port: Int) = runCatching {
-        socket.send(DatagramPacket(bytes, bytes.size, address, port))
+        socket?.send(DatagramPacket(bytes, bytes.size, address, port))
     }.getOrNull()
 
-    override fun close() { localOffer = null; socket.close(); scope.cancel(); mutableOffers.value = emptyMap() }
+    @Synchronized
+    private fun stopSocket() {
+        socket?.close()
+        socket = null
+        receiveJob?.cancel()
+        receiveJob = null
+        broadcastJob?.cancel()
+        broadcastJob = null
+        mutableOffers.value = emptyMap()
+    }
+
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+        localOffer = null
+        stopSocket()
+        scope.cancel()
+    }
 
     private inner class LocalOffer(val port: Int, val invitation: String) {
         fun message() = "$OFFER_VERSION|$invitation|$localDeviceId|$port"
@@ -121,23 +156,51 @@ class PairingLanDiscovery(private val localDeviceId: String) : Closeable {
 
 /** Bonjour/DNS-SD discovery for both ordinary mesh sessions and pairing offers. */
 class BonjourDiscovery(private val localDeviceId: String) : Closeable {
-    private val mdns = JmDNS.create(localAddress(), "SyncTosh-${localDeviceId.take(8)}")
     private val mutablePairingOffers = MutableStateFlow<Map<String, PairingOffer>>(emptyMap())
     private val mutablePeers = MutableStateFlow<Map<String, DiscoveredPeer>>(emptyMap())
     val pairingOffers: StateFlow<Map<String, PairingOffer>> = mutablePairingOffers
     val peers: StateFlow<Map<String, DiscoveredPeer>> = mutablePeers
+    private var mdns: JmDNS? = null
     private var pairingService: ServiceInfo? = null
     private var meshService: ServiceInfo? = null
     private var meshPort: Int? = null
-    private var meshEnabled = true
+    private var pairingAdvertisement: Pair<Int, String>? = null
+    private var enabled = false
+    private var closed = false
+    internal val isRunning: Boolean get() = mdns != null
 
-    init {
-        mdns.addServiceListener(PAIRING_TYPE, listener(PAIRING_TYPE, ::acceptPairing, ::losePairing))
-        mdns.addServiceListener(MESH_TYPE, listener(MESH_TYPE, ::acceptMesh, ::loseMesh))
+    @Synchronized
+    fun setEnabled(nextEnabled: Boolean) {
+        if (closed || enabled == nextEnabled) return
+        enabled = nextEnabled
+        if (nextEnabled) {
+            try {
+                val active = JmDNS.create(localAddress(), "SyncTosh-${localDeviceId.take(8)}")
+                mdns = active
+                active.addServiceListener(PAIRING_TYPE, listener(active, PAIRING_TYPE, ::acceptPairing, ::losePairing))
+                active.addServiceListener(MESH_TYPE, listener(active, MESH_TYPE, ::acceptMesh, ::loseMesh))
+                meshPort?.let(::registerMeshService)
+                pairingAdvertisement?.let { (port, invitationId) -> registerPairingService(port, invitationId) }
+                runCatching { active.list(MESH_TYPE, 1_000).forEach(::acceptMesh) }
+            } catch (error: Throwable) {
+                closeMdns()
+                enabled = false
+                throw error
+            }
+        } else {
+            closeMdns()
+        }
     }
 
+    @Synchronized
     fun advertisePairing(port: Int, invitationId: String) {
         stopPairingAdvertisement()
+        pairingAdvertisement = port to invitationId
+        if (enabled) registerPairingService(port, invitationId)
+    }
+
+    private fun registerPairingService(port: Int, invitationId: String) {
+        val active = mdns ?: return
         val info = ServiceInfo.create(
             PAIRING_TYPE,
             "SyncTosh-Pair-${localDeviceId.take(8)}",
@@ -146,12 +209,15 @@ class BonjourDiscovery(private val localDeviceId: String) : Closeable {
             0,
             mapOf("id" to localDeviceId, "invite" to invitationId),
         )
-        mdns.registerService(info)
+        active.registerService(info)
         pairingService = info
     }
 
+    @Synchronized
     fun stopPairingAdvertisement() {
-        pairingService?.let { runCatching { mdns.unregisterService(it) } }
+        pairingAdvertisement = null
+        val active = mdns
+        pairingService?.let { info -> if (active != null) runCatching { active.unregisterService(info) } }
         pairingService = null
     }
 
@@ -159,24 +225,14 @@ class BonjourDiscovery(private val localDeviceId: String) : Closeable {
     fun advertiseMesh(port: Int) {
         require(port in 1..65_535)
         meshPort = port
-        if (meshEnabled) registerMeshService(port)
-    }
-
-    @Synchronized
-    fun setMeshEnabled(enabled: Boolean) {
-        if (meshEnabled == enabled) return
-        meshEnabled = enabled
         if (enabled) {
-            meshPort?.let(::registerMeshService)
-            runCatching { mdns.list(MESH_TYPE, 1_000).forEach(::acceptMesh) }
-        } else {
-            meshService?.let { runCatching { mdns.unregisterService(it) } }
-            meshService = null
+            registerMeshService(port)
         }
     }
 
     private fun registerMeshService(port: Int) {
         if (meshService != null) return
+        val active = mdns ?: return
         val info = ServiceInfo.create(
             MESH_TYPE,
             "SyncTosh-${localDeviceId.take(8)}",
@@ -185,16 +241,17 @@ class BonjourDiscovery(private val localDeviceId: String) : Closeable {
             0,
             mapOf("id" to localDeviceId, "v" to "2"),
         )
-        mdns.registerService(info)
+        active.registerService(info)
         meshService = info
     }
 
     private fun listener(
+        active: JmDNS,
         type: String,
         accept: (ServiceInfo) -> Unit,
         lose: (String) -> Unit,
     ) = object : ServiceListener {
-        override fun serviceAdded(event: ServiceEvent) { mdns.requestServiceInfo(type, event.name, true) }
+        override fun serviceAdded(event: ServiceEvent) { active.requestServiceInfo(type, event.name, true) }
         override fun serviceResolved(event: ServiceEvent) = accept(event.info)
         override fun serviceRemoved(event: ServiceEvent) = lose(event.name)
     }
@@ -228,12 +285,25 @@ class BonjourDiscovery(private val localDeviceId: String) : Closeable {
         mutablePeers.value = mutablePeers.value.filterKeys { !name.endsWith(it.take(8), ignoreCase = true) }
     }
 
-    override fun close() {
-        stopPairingAdvertisement()
-        meshEnabled = false
-        meshService?.let { runCatching { mdns.unregisterService(it) } }
+    private fun closeMdns() {
+        val active = mdns ?: return
+        pairingService?.let { runCatching { active.unregisterService(it) } }
+        pairingService = null
+        meshService?.let { runCatching { active.unregisterService(it) } }
         meshService = null
-        mdns.close()
+        runCatching { active.close() }
+        mdns = null
+        mutablePairingOffers.value = emptyMap()
+        mutablePeers.value = emptyMap()
+    }
+
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+        enabled = false
+        pairingAdvertisement = null
+        closeMdns()
     }
 
     private companion object {

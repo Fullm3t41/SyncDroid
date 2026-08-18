@@ -1069,6 +1069,13 @@ fun SyncDroidApp() {
                             when (val current = updateState) {
                                 is UpdateState.Available -> scope.launch { updateService.downloadUpdate() }
                                 is UpdateState.Ready -> AndroidUpdateInstaller.install(context, current.installer)
+                                    .onFailure {
+                                        Toast.makeText(
+                                            context,
+                                            it.message ?: "Could not open the Android installer",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
                                 is UpdateState.Failed -> scope.launch {
                                     if (current.updateStillAvailable) updateService.downloadUpdate()
                                     else updateService.checkForUpdate()

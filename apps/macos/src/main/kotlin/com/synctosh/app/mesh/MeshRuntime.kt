@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -69,6 +70,7 @@ class MeshRuntime(
     private val store: MeshStore = MeshStore(),
     private val identity: MacDeviceIdentity = MacDeviceIdentity(),
     private val updateCache: MeshUpdateCache? = null,
+    initiallyForeground: Boolean = true,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lanDiscovery = PairingLanDiscovery(identity.deviceId)
@@ -84,6 +86,7 @@ class MeshRuntime(
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
     private val automaticallyContactedPeers = ConcurrentHashMap.newKeySet<String>()
     private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
+    private val retiredPeerServers = ConcurrentHashMap.newKeySet<MeshPeerServer>()
     private val connectionJobs = mutableMapOf<String, Job>()
     private val syncMutex = Mutex()
     private val fileHistory = FileHistoryRepository(store, identity.deviceId)
@@ -93,11 +96,13 @@ class MeshRuntime(
     }
     private var expiryJob: Job? = null
     private var backgroundScheduleJob: Job? = null
-    @Volatile private var windowForeground = true
-    @Volatile private var discoveryActive = true
+    @Volatile private var windowForeground = initiallyForeground
+    @Volatile private var discoveryActive = false
+    @Volatile private var closing = false
 
     init {
         fileHistory.cleanupExpired()
+        setDiscoveryActive(initiallyForeground)
         refresh("Ready to connect")
         store.profile()?.let(::startMeshNetworking)
         scope.launch {
@@ -118,9 +123,10 @@ class MeshRuntime(
                     currentWifiName = MacWifi.currentSsid(),
                     registeredWifiNames = preferences.registeredWifiNames,
                 )
-                delay(10_000)
+                delay(if (windowForeground) FOREGROUND_WIFI_POLL_MILLIS else BACKGROUND_WIFI_POLL_MILLIS)
             }
         }
+        if (!windowForeground) restartBackgroundSchedule()
     }
 
     fun setWindowForeground(foreground: Boolean) {
@@ -142,6 +148,20 @@ class MeshRuntime(
 
     fun discoveryScheduleChanged() {
         if (!windowForeground) restartBackgroundSchedule()
+    }
+
+    /** Stops accepting new work, then preserves any authenticated transfer until it completes. */
+    suspend fun closeAfterActiveTransfers() {
+        windowForeground = false
+        backgroundScheduleJob?.cancel()
+        backgroundScheduleJob = null
+        setDiscoveryActive(false)
+        connectionJobs
+            .filterKeys { it !in activeSessions }
+            .values
+            .forEach(Job::cancel)
+        while (activeSessions.isNotEmpty() || syncMutex.isLocked) delay(500)
+        close()
     }
 
     fun registerCurrentWifi() {
@@ -507,7 +527,7 @@ class MeshRuntime(
         bonjour.advertiseMesh(port)
         runCatching { MeshLanDiscovery(identity.deviceId, profile.groupId) }.getOrNull()?.let { lan ->
             meshLanDiscovery = lan
-            if (discoveryActive) lan.start(port)
+            if (discoveryActive) runCatching { lan.start(port) }
             meshLanCollector = scope.launch {
                 lan.peers.collectLatest { peers ->
                     lanMeshPeers.value = peers.mapValues { (_, peer) ->
@@ -628,7 +648,11 @@ class MeshRuntime(
 
     private fun stopPairingOffer() {
         expiryJob?.cancel(); expiryJob = null
-        pairingServer?.close(); pairingServer = null
+        pairingServer?.let { server ->
+            server.close()
+            retiredPeerServers += server
+        }
+        pairingServer = null
         lanDiscovery.stopAdvertising(); bonjour.stopPairingAdvertisement()
         mutableState.value = mutableState.value.copy(pairingOffer = null)
     }
@@ -643,11 +667,10 @@ class MeshRuntime(
                     registeredWifiNames = preferences.registeredWifiNames,
                 )
                 if (!backgroundWifiAllowed(currentWifi)) {
-                    waitForActiveWorkToFinish()
                     if (windowForeground) break
-                    setDiscoveryActive(false)
+                    suspendDiscoveryAndDrain()
                     refresh("Background discovery paused · connect to a registered Wi-Fi")
-                    delay(5_000)
+                    delay(BACKGROUND_WIFI_POLL_MILLIS)
                     continue
                 }
                 if (preferences.alwaysOnDiscovery) {
@@ -670,9 +693,8 @@ class MeshRuntime(
                 val startMillis = window.start.atZone(zone).toInstant().toEpochMilli()
                 val waitForStart = startMillis - System.currentTimeMillis()
                 if (waitForStart > 0) {
-                    waitForActiveWorkToFinish()
                     if (windowForeground) break
-                    setDiscoveryActive(false)
+                    suspendDiscoveryAndDrain()
                     refresh("Background sync scheduled · ${BACKGROUND_TIME_FORMAT.format(window.start)}")
                     val remainingToStart = startMillis - System.currentTimeMillis()
                     if (remainingToStart > 0) delay(remainingToStart)
@@ -688,16 +710,24 @@ class MeshRuntime(
                 }
                 val remaining = endMillis - System.currentTimeMillis()
                 if (remaining > 0) delay(remaining)
-                waitForActiveWorkToFinish()
-                if (!windowForeground) setDiscoveryActive(false)
+                if (!windowForeground) suspendDiscoveryAndDrain()
             }
         }
+    }
+
+    private suspend fun suspendDiscoveryAndDrain() {
+        setDiscoveryActive(false)
+        connectionJobs
+            .filterKeys { it !in activeSessions }
+            .values
+            .forEach(Job::cancel)
+        waitForActiveWorkToFinish()
     }
 
     private suspend fun waitForActiveWorkToFinish() {
         while (
             !windowForeground &&
-            (activeSessions.isNotEmpty() || syncMutex.isLocked || connectionJobs.values.any(Job::isActive))
+            (activeSessions.isNotEmpty() || syncMutex.isLocked)
         ) delay(500)
     }
 
@@ -708,25 +738,43 @@ class MeshRuntime(
         currentWifi != null && currentWifi in preferences.registeredWifiNames
 
     private fun setDiscoveryActive(active: Boolean) {
+        if (closing) return
+        runCatching { lanDiscovery.setEnabled(active && (windowForeground || pairingServer != null)) }
         if (discoveryActive == active) return
         discoveryActive = active
         if (active) automaticallyContactedPeers.clear()
-        bonjour.setMeshEnabled(active)
-        if (active) meshPort?.let { meshLanDiscovery?.start(it) } else meshLanDiscovery?.stop()
+        runCatching { bonjour.setEnabled(active) }
+        if (active) meshPort?.let { port -> runCatching { meshLanDiscovery?.start(port) } }
+        else meshLanDiscovery?.stop()
     }
 
     override fun close() {
+        if (closing) return
+        closing = true
+        discoveryActive = false
+        val meshToAwait = meshServer
         backgroundScheduleJob?.cancel(); backgroundScheduleJob = null
         stopPairingOffer(); meshServer?.close(); meshServer = null
+        val serversToAwait = retiredPeerServers.toList() + listOfNotNull(meshToAwait)
         meshLanCollector?.cancel(); meshLanCollector = null
         meshLanDiscovery?.close(); meshLanDiscovery = null; meshPort = null
         connectionJobs.values.forEach(Job::cancel); connectionJobs.clear()
-        lanDiscovery.close(); bonjour.close(); store.close(); scope.cancel()
+        lanDiscovery.close(); bonjour.close()
+        val runtimeJob = scope.coroutineContext[Job]
+        scope.cancel()
+        runBlocking {
+            runtimeJob?.join()
+            serversToAwait.forEach { it.awaitClosed() }
+        }
+        retiredPeerServers.clear()
+        store.close()
     }
 }
 
 private const val ROUTING_FANOUT = 2
 private const val ROUTING_SETTLE_MILLIS = 750L
+private const val FOREGROUND_WIFI_POLL_MILLIS = 10_000L
+private const val BACKGROUND_WIFI_POLL_MILLIS = 60_000L
 
 private fun mergeDiscoveredPeers(
     fallback: Map<String, DiscoveredPeer>,
