@@ -240,10 +240,10 @@ jobs:
           commit="$(
             if [[ -n "$parent" ]]; then
               jq -n --arg tree "$tree" --arg parent "$parent" --arg version "$GITHUB_REF_NAME" \
-                '{message: "Publish updater metadata for " + $version, tree: $tree, parents: [$parent]}'
+                '{message: ("Publish updater metadata for " + $version), tree: $tree, parents: [$parent]}'
             else
               jq -n --arg tree "$tree" --arg version "$GITHUB_REF_NAME" \
-                '{message: "Publish updater metadata for " + $version, tree: $tree, parents: []}'
+                '{message: ("Publish updater metadata for " + $version), tree: $tree, parents: []}'
             fi \
               | gh api --method POST "$repo/git/commits" --input - --jq .sha
           )"
