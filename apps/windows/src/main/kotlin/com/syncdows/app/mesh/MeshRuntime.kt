@@ -95,8 +95,10 @@ class MeshRuntime(
     }
     private var expiryJob: Job? = null
     private var backgroundScheduleJob: Job? = null
+    private var discoveryRetryJob: Job? = null
     @Volatile private var windowForeground = true
     @Volatile private var discoveryActive = true
+    @Volatile private var closing = false
 
     init {
         fileHistory.cleanupExpired()
@@ -665,7 +667,6 @@ class MeshRuntime(
         bonjour.advertiseMesh(port)
         runCatching { MeshLanDiscovery(identity.deviceId, profile.groupId) }.getOrNull()?.let { lan ->
             meshLanDiscovery = lan
-            if (discoveryActive) lan.start(port)
             meshLanCollector = scope.launch {
                 lan.peers.collectLatest { peers ->
                     lanMeshPeers.value = peers.mapValues { (_, peer) ->
@@ -674,6 +675,7 @@ class MeshRuntime(
                 }
             }
         }
+        if (discoveryActive) setDiscoveryActive(true)
     }
 
     private fun stopMeshNetworking() {
@@ -881,16 +883,50 @@ class MeshRuntime(
         return currentWifi != null && currentWifi in registered
     }
 
+    @Synchronized
     private fun setDiscoveryActive(active: Boolean) {
-        if (discoveryActive == active) return
+        if (closing) return
+        val changed = discoveryActive != active
         discoveryActive = active
-        if (active) automaticallyContactedPeers.clear()
-        bonjour.setMeshEnabled(active)
-        if (active) meshPort?.let { meshLanDiscovery?.start(it) } else meshLanDiscovery?.stop()
+        if (changed && active) automaticallyContactedPeers.clear()
+        if (!active) {
+            discoveryRetryJob?.cancel()
+            discoveryRetryJob = null
+            runCatching { bonjour.setMeshEnabled(false) }
+            meshLanDiscovery?.stop()
+            return
+        }
+        if (applyDiscoveryStateLocked()) {
+            discoveryRetryJob?.cancel()
+            discoveryRetryJob = null
+        } else if (discoveryRetryJob?.isActive != true) {
+            discoveryRetryJob = scope.launch {
+                var waitMillis = DISCOVERY_RETRY_INITIAL_MILLIS
+                while (isActive) {
+                    delay(waitMillis)
+                    val ready = synchronized(this@MeshRuntime) {
+                        closing || !discoveryActive || applyDiscoveryStateLocked()
+                    }
+                    if (ready) break
+                    waitMillis = (waitMillis * 2).coerceAtMost(DISCOVERY_RETRY_MAX_MILLIS)
+                }
+            }
+        }
+    }
+
+    private fun applyDiscoveryStateLocked(): Boolean {
+        var ready = runCatching { bonjour.setMeshEnabled(true) }.isSuccess
+        meshPort?.let { port ->
+            val lan = meshLanDiscovery
+            if (lan == null || runCatching { lan.start(port) }.isFailure || !lan.isRunning) ready = false
+        }
+        return ready
     }
 
     override fun close() {
+        closing = true
         backgroundScheduleJob?.cancel(); backgroundScheduleJob = null
+        discoveryRetryJob?.cancel(); discoveryRetryJob = null
         stopPairingOffer(); meshServer?.close(); meshServer = null
         meshLanCollector?.cancel(); meshLanCollector = null
         meshLanDiscovery?.close(); meshLanDiscovery = null; meshPort = null
@@ -900,6 +936,8 @@ class MeshRuntime(
 }
 
 private const val ROUTING_FANOUT = 2
+private const val DISCOVERY_RETRY_INITIAL_MILLIS = 1_000L
+private const val DISCOVERY_RETRY_MAX_MILLIS = 30_000L
 private const val ROUTING_SETTLE_MILLIS = 750L
 
 private fun mergeDiscoveredPeers(

@@ -44,7 +44,7 @@ class MeshLanDiscovery(
     private var receiveJob: Job? = null
     private var announcementJob: Job? = null
     private var closed = false
-    internal val isRunning: Boolean get() = socket != null
+    val isRunning: Boolean get() = socket != null
 
     @Synchronized
     fun start(tcpPort: Int) {

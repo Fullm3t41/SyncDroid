@@ -24,6 +24,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -87,7 +88,9 @@ class MeshRuntime(
     private val automaticallyContactedPeers = ConcurrentHashMap.newKeySet<String>()
     private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
     private val retiredPeerServers = ConcurrentHashMap.newKeySet<MeshPeerServer>()
-    private val connectionJobs = mutableMapOf<String, Job>()
+    private val connectionJobs = ConcurrentHashMap<String, Job>()
+    private val stableConnections = ConcurrentHashMap.newKeySet<AuthenticatedPeerConnection>()
+    private val outboundSockets = PeerSocketTracker()
     private val syncMutex = Mutex()
     private val fileHistory = FileHistoryRepository(store, identity.deviceId)
     private val chatAttachments = ChatAttachmentStore(store)
@@ -96,15 +99,17 @@ class MeshRuntime(
     }
     private var expiryJob: Job? = null
     private var backgroundScheduleJob: Job? = null
+    private var discoveryRetryJob: Job? = null
+    private val closeStarted = AtomicBoolean(false)
     @Volatile private var windowForeground = initiallyForeground
     @Volatile private var discoveryActive = false
     @Volatile private var closing = false
 
     init {
         fileHistory.cleanupExpired()
-        setDiscoveryActive(initiallyForeground)
         refresh("Ready to connect")
         store.profile()?.let(::startMeshNetworking)
+        scope.launch { setDiscoveryActive(initiallyForeground) }
         scope.launch {
             combine(bonjour.peers, lanMeshPeers, bonjour.pairingOffers, lanDiscovery.offers) { peers, fallback, _, _ ->
                 mergeDiscoveredPeers(fallback, peers)
@@ -160,7 +165,10 @@ class MeshRuntime(
             .filterKeys { it !in activeSessions }
             .values
             .forEach(Job::cancel)
-        while (activeSessions.isNotEmpty() || syncMutex.isLocked) delay(500)
+        while (activeSessions.isNotEmpty() || syncMutex.isLocked) {
+            closeStalledPeerConnections()
+            delay(500)
+        }
         close()
     }
 
@@ -452,7 +460,8 @@ class MeshRuntime(
     }
 
     private suspend fun joinOffer(offer: PairingOffer, code: String) {
-        MeshPeerClient(DeviceTlsContext(identity, allowUnknownPeer = true)).connect(offer.address, offer.port).use { connection ->
+        MeshPeerClient(DeviceTlsContext(identity, allowUnknownPeer = true), outboundSockets)
+            .connect(offer.address, offer.port).use { connection ->
             val handshake = PairingHandshake(
                 PairingRole.Joiner,
                 offer.invitationId,
@@ -527,7 +536,6 @@ class MeshRuntime(
         bonjour.advertiseMesh(port)
         runCatching { MeshLanDiscovery(identity.deviceId, profile.groupId) }.getOrNull()?.let { lan ->
             meshLanDiscovery = lan
-            if (discoveryActive) runCatching { lan.start(port) }
             meshLanCollector = scope.launch {
                 lan.peers.collectLatest { peers ->
                     lanMeshPeers.value = peers.mapValues { (_, peer) ->
@@ -536,37 +544,43 @@ class MeshRuntime(
                 }
             }
         }
+        if (discoveryActive) setDiscoveryActive(true)
     }
 
     private suspend fun runStableSession(connection: AuthenticatedPeerConnection, profile: MeshProfile) {
-        val remoteId = StablePeerAuthenticator(store, identity, profile.groupId).authenticate(connection)
-        if (!activeSessions.add(remoteId)) return
+        stableConnections += connection
         try {
-            syncMutex.withLock {
-                var transferred = 0L
-                val startedAt = System.nanoTime()
-                mutableState.value = mutableState.value.copy(status = "Scanning configured folders…")
-                val result = MeshFileSyncSession(store, identity, profile, updateCache) { bytes ->
-                    transferred += bytes
-                    val seconds = ((System.nanoTime() - startedAt) / 1_000_000_000.0).coerceAtLeast(0.1)
-                    mutableState.value = mutableState.value.copy(
-                        status = "Syncing files · ${formatTransferRate((transferred / seconds).toLong())}",
-                    )
-                }.run(connection, remoteId)
-                lastSessionAtMillis[remoteId] = System.currentTimeMillis()
-                val conflicts = store.unresolvedConflicts().size
-                refresh(if (conflicts == 0) "Files synced" else "$conflicts file conflict${if (conflicts == 1) "" else "s"} need review")
-                if (result.appliedChangeCount > 0 || result.metadataChanged) {
-                    connectToAvailablePeers(
-                        profile,
-                        discoveredPeers().values,
-                        initiatorOrdering = false,
-                        sourcePeerId = remoteId,
-                    )
+            val remoteId = StablePeerAuthenticator(store, identity, profile.groupId).authenticate(connection)
+            if (!activeSessions.add(remoteId)) return
+            try {
+                syncMutex.withLock {
+                    var transferred = 0L
+                    val startedAt = System.nanoTime()
+                    mutableState.value = mutableState.value.copy(status = "Scanning configured folders…")
+                    val result = MeshFileSyncSession(store, identity, profile, updateCache) { bytes ->
+                        transferred += bytes
+                        val seconds = ((System.nanoTime() - startedAt) / 1_000_000_000.0).coerceAtLeast(0.1)
+                        mutableState.value = mutableState.value.copy(
+                            status = "Syncing files · ${formatTransferRate((transferred / seconds).toLong())}",
+                        )
+                    }.run(connection, remoteId)
+                    lastSessionAtMillis[remoteId] = System.currentTimeMillis()
+                    val conflicts = store.unresolvedConflicts().size
+                    refresh(if (conflicts == 0) "Files synced" else "$conflicts file conflict${if (conflicts == 1) "" else "s"} need review")
+                    if (result.appliedChangeCount > 0 || result.metadataChanged) {
+                        connectToAvailablePeers(
+                            profile,
+                            discoveredPeers().values,
+                            initiatorOrdering = false,
+                            sourcePeerId = remoteId,
+                        )
+                    }
                 }
+            } finally {
+                activeSessions.remove(remoteId)
             }
         } finally {
-            activeSessions.remove(remoteId)
+            stableConnections.remove(connection)
         }
     }
 
@@ -607,7 +621,7 @@ class MeshRuntime(
             if (connectionJobs[peer.deviceId]?.isActive == true || peer.deviceId in activeSessions) return@forEach
             connectionJobs[peer.deviceId] = scope.launch {
                 runCatching {
-                    MeshPeerClient(DeviceTlsContext(identity, allowUnknownPeer = true))
+                    MeshPeerClient(DeviceTlsContext(identity, allowUnknownPeer = true), outboundSockets)
                         .connect(peer.address, peer.port)
                         .use { runStableSession(it, profile) }
                 }.onFailure { reportSessionFailure(peer.deviceId, it) }
@@ -728,7 +742,15 @@ class MeshRuntime(
         while (
             !windowForeground &&
             (activeSessions.isNotEmpty() || syncMutex.isLocked)
-        ) delay(500)
+        ) {
+            closeStalledPeerConnections()
+            delay(500)
+        }
+    }
+
+    private fun closeStalledPeerConnections(nowMillis: Long = System.currentTimeMillis()) {
+        val cutoff = nowMillis - PEER_INACTIVITY_TIMEOUT_MILLIS
+        stableConnections.filter { it.inactiveSince(cutoff) }.forEach(AuthenticatedPeerConnection::close)
     }
 
     private fun discoveredPeers(): Map<String, DiscoveredPeer> =
@@ -737,28 +759,65 @@ class MeshRuntime(
     private fun backgroundWifiAllowed(currentWifi: String?): Boolean =
         currentWifi != null && currentWifi in preferences.registeredWifiNames
 
+    @Synchronized
     private fun setDiscoveryActive(active: Boolean) {
         if (closing) return
-        runCatching { lanDiscovery.setEnabled(active && (windowForeground || pairingServer != null)) }
-        if (discoveryActive == active) return
+        val changed = discoveryActive != active
         discoveryActive = active
-        if (active) automaticallyContactedPeers.clear()
-        runCatching { bonjour.setEnabled(active) }
-        if (active) meshPort?.let { port -> runCatching { meshLanDiscovery?.start(port) } }
-        else meshLanDiscovery?.stop()
+        if (changed && active) automaticallyContactedPeers.clear()
+        if (!active) {
+            discoveryRetryJob?.cancel()
+            discoveryRetryJob = null
+            runCatching { lanDiscovery.setEnabled(false) }
+            runCatching { bonjour.setEnabled(false) }
+            meshLanDiscovery?.stop()
+            return
+        }
+        if (applyDiscoveryStateLocked()) {
+            discoveryRetryJob?.cancel()
+            discoveryRetryJob = null
+        } else if (discoveryRetryJob?.isActive != true) {
+            discoveryRetryJob = scope.launch {
+                var waitMillis = DISCOVERY_RETRY_INITIAL_MILLIS
+                while (isActive) {
+                    delay(waitMillis)
+                    val ready = synchronized(this@MeshRuntime) {
+                        closing || !discoveryActive || applyDiscoveryStateLocked()
+                    }
+                    if (ready) break
+                    waitMillis = (waitMillis * 2).coerceAtMost(DISCOVERY_RETRY_MAX_MILLIS)
+                }
+            }
+        }
+    }
+
+    private fun applyDiscoveryStateLocked(): Boolean {
+        var ready = true
+        val pairingNeeded = windowForeground || pairingServer != null
+        val pairingResult = runCatching { lanDiscovery.setEnabled(pairingNeeded) }
+        if (pairingResult.isFailure || (pairingNeeded && !lanDiscovery.isRunning)) ready = false
+        val bonjourResult = runCatching { bonjour.setEnabled(true) }
+        if (bonjourResult.isFailure || !bonjour.isRunning) ready = false
+        meshPort?.let { port ->
+            val lan = meshLanDiscovery
+            if (lan == null || runCatching { lan.start(port) }.isFailure || !lan.isRunning) ready = false
+        }
+        return ready
     }
 
     override fun close() {
-        if (closing) return
+        if (!closeStarted.compareAndSet(false, true)) return
         closing = true
         discoveryActive = false
         val meshToAwait = meshServer
         backgroundScheduleJob?.cancel(); backgroundScheduleJob = null
+        discoveryRetryJob?.cancel(); discoveryRetryJob = null
         stopPairingOffer(); meshServer?.close(); meshServer = null
         val serversToAwait = retiredPeerServers.toList() + listOfNotNull(meshToAwait)
         meshLanCollector?.cancel(); meshLanCollector = null
         meshLanDiscovery?.close(); meshLanDiscovery = null; meshPort = null
         connectionJobs.values.forEach(Job::cancel); connectionJobs.clear()
+        outboundSockets.close()
         lanDiscovery.close(); bonjour.close()
         val runtimeJob = scope.coroutineContext[Job]
         scope.cancel()
@@ -766,12 +825,16 @@ class MeshRuntime(
             runtimeJob?.join()
             serversToAwait.forEach { it.awaitClosed() }
         }
+        // Socket closure above makes blocking TLS operations terminate; only close SQLite after
+        // every runtime and server job has stopped using it.
         retiredPeerServers.clear()
         store.close()
     }
 }
 
 private const val ROUTING_FANOUT = 2
+private const val DISCOVERY_RETRY_INITIAL_MILLIS = 1_000L
+private const val DISCOVERY_RETRY_MAX_MILLIS = 30_000L
 private const val ROUTING_SETTLE_MILLIS = 750L
 private const val FOREGROUND_WIFI_POLL_MILLIS = 10_000L
 private const val BACKGROUND_WIFI_POLL_MILLIS = 60_000L

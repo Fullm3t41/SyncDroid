@@ -25,7 +25,9 @@ import com.synctosh.app.platform.MacUpdateInstaller
 import com.synctosh.app.platform.UpdateConfig
 import com.synctosh.app.ui.SyncToshApp
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal fun runSyncToshUi(args: Array<String>) {
     val workerEndpoint = WorkerEndpoint.fromEnvironmentOrArguments(args)
@@ -69,9 +71,11 @@ internal fun runSyncToshUi(args: Array<String>) {
             if (!stopped.compareAndSet(false, true)) return
             saveWindowState()
             uiScope.launch {
-                runCatching { meshRuntime.closeAfterActiveTransfers() }
-                    .onFailure { runCatching { meshRuntime.close() } }
-                workerEndpoint?.send(WorkerCommand.UI_CLOSED)
+                withContext(Dispatchers.IO) {
+                    runCatching { meshRuntime.closeAfterActiveTransfers() }
+                        .onFailure { runCatching { meshRuntime.close() } }
+                    workerEndpoint?.send(WorkerCommand.UI_CLOSED)
+                }
                 exitApplication()
             }
         }
@@ -119,8 +123,13 @@ internal fun runSyncToshUi(args: Array<String>) {
             workerEndpoint?.send(WorkerCommand.UI_STARTED)
             onDispose {
                 if (stopped.compareAndSet(false, true)) {
-                    runCatching { meshRuntime.close() }
-                    workerEndpoint?.send(WorkerCommand.UI_CLOSED)
+                    Thread({
+                        runCatching { meshRuntime.close() }
+                        workerEndpoint?.send(WorkerCommand.UI_CLOSED)
+                    }, "synctosh-ui-shutdown").apply {
+                        isDaemon = false
+                        start()
+                    }
                 }
             }
         }

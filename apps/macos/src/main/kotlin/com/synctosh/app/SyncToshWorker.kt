@@ -55,7 +55,8 @@ internal class SyncToshWorker(private val arguments: Array<String>) : Closeable 
     private var runtimeStateJob: Job? = null
     private var latestState = MeshRuntimeState(status = "Starting background service…")
     private var trayIcon: TrayIcon? = null
-    private var uiProcess: Process? = null
+    @Volatile private var uiProcess: Process? = null
+    private var instanceLock: WorkerInstanceLock? = null
 
     fun run() {
         val existing = WorkerEndpoint.load()
@@ -63,9 +64,22 @@ internal class SyncToshWorker(private val arguments: Array<String>) : Closeable 
             if (!backgroundRequested) existing.send(WorkerCommand.SHOW)
             return
         }
-        existing?.deleteIfCurrent()
+        val acquiredLock = WorkerInstanceLock.tryAcquire(MacAppPaths.workerLock)
+        if (acquiredLock == null) {
+            if (!backgroundRequested) awaitExistingWorker()?.send(WorkerCommand.SHOW)
+            return
+        }
+        instanceLock = acquiredLock
+        val racedWorker = WorkerEndpoint.load()
+        if (racedWorker?.send(WorkerCommand.PING) == true) {
+            if (!backgroundRequested) racedWorker.send(WorkerCommand.SHOW)
+            acquiredLock.close()
+            instanceLock = null
+            return
+        }
+        racedWorker?.deleteIfCurrent()
 
-        val server = WorkerControlServer(::handleCommand)
+        val server = WorkerControlServer(onCommand = ::handleCommand)
         controlServer = server
         server.endpoint.save()
         installTray()
@@ -270,6 +284,16 @@ internal class SyncToshWorker(private val arguments: Array<String>) : Closeable 
         }
     }
 
+    private fun awaitExistingWorker(): WorkerEndpoint? {
+        val deadline = System.nanoTime() + WORKER_STARTUP_WAIT_MILLIS * 1_000_000
+        while (System.nanoTime() < deadline) {
+            val endpoint = WorkerEndpoint.load()
+            if (endpoint?.send(WorkerCommand.PING) == true) return endpoint
+            Thread.sleep(WORKER_STARTUP_POLL_MILLIS)
+        }
+        return null
+    }
+
     @Synchronized
     override fun close() {
         if (!stopped.compareAndSet(false, true)) return
@@ -286,11 +310,16 @@ internal class SyncToshWorker(private val arguments: Array<String>) : Closeable 
             runCatching { controlServer?.close() }
             controlServer = null
             scope.cancel()
+            runCatching { instanceLock?.close() }
+            instanceLock = null
         } finally {
             finished.countDown()
         }
     }
 }
+
+private const val WORKER_STARTUP_WAIT_MILLIS = 5_000L
+private const val WORKER_STARTUP_POLL_MILLIS = 100L
 
 internal object AppProcessLauncher {
     fun command(vararg arguments: String): List<String> {

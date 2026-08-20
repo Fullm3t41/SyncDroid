@@ -1359,10 +1359,12 @@ private fun ConflictReviewDialog(
                     enabled = details?.local?.deleted == false && !resolving,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (resolving) "Resolving…" else "Keep both") }
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = !resolving,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Review later") }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !resolving) { Text("Review later") }
         },
     )
 }

@@ -9,7 +9,11 @@ import java.net.Socket
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.security.SecureRandom
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
@@ -88,7 +92,45 @@ internal data class WorkerEndpoint(val port: Int, val token: String) {
 internal const val WORKER_PORT_ENV = "SYNCTOSH_WORKER_PORT"
 internal const val WORKER_TOKEN_ENV = "SYNCTOSH_WORKER_TOKEN"
 
+internal class WorkerInstanceLock private constructor(
+    private val channel: FileChannel,
+    private val lock: FileLock,
+) : Closeable {
+    override fun close() {
+        runCatching { lock.release() }
+        runCatching { channel.close() }
+    }
+
+    companion object {
+        fun tryAcquire(path: java.nio.file.Path): WorkerInstanceLock? {
+            Files.createDirectories(requireNotNull(path.parent))
+            val channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+            return try {
+                runCatching {
+                    Files.setPosixFilePermissions(
+                        path,
+                        setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                    )
+                }
+                val lock = channel.tryLock()
+                if (lock == null) {
+                    channel.close()
+                    return null
+                }
+                WorkerInstanceLock(channel, lock)
+            } catch (_: OverlappingFileLockException) {
+                channel.close()
+                null
+            } catch (error: Throwable) {
+                channel.close()
+                throw error
+            }
+        }
+    }
+}
+
 internal class WorkerControlServer(
+    private val readTimeoutMillis: Int = 1_500,
     private val onCommand: (WorkerCommand) -> Unit,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -97,13 +139,13 @@ internal class WorkerControlServer(
     private val acceptJob: Job = scope.launch {
         while (isActive && !server.isClosed) {
             val socket = runCatching { server.accept() }.getOrNull() ?: continue
-            launch { handle(socket) }
+            scope.launch { runCatching { handle(socket) } }
         }
     }
 
     private fun handle(socket: Socket) {
         socket.use {
-            it.soTimeout = 1_500
+            it.soTimeout = readTimeoutMillis
             val parts = it.getInputStream().bufferedReader().readLine()?.split(' ', limit = 2) ?: return
             if (parts.size != 2 || parts[0] != endpoint.token) return
             val command = runCatching { WorkerCommand.valueOf(parts[1]) }.getOrNull() ?: return
