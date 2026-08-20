@@ -213,6 +213,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import androidx.core.view.WindowCompat
 import com.syncdroid.shared.update.UpdateState
+import com.syncdroid.shared.update.OutdatedOfflineBundleException
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
     Sync("Sync", Icons.Rounded.Sync),
@@ -232,6 +233,7 @@ fun SyncDroidApp() {
     val themePreferenceStore = remember(context) { ThemePreferenceStore(context) }
     val updateService = remember(context) { AndroidUpdateProvider.get(context) }
     val updateState by updateService.state.collectAsState()
+    var offlineBundleOperationInProgress by remember { mutableStateOf(false) }
     var darkTheme by rememberSaveable {
         mutableStateOf(themePreferenceStore.load(systemDarkTheme))
     }
@@ -674,13 +676,42 @@ fun SyncDroidApp() {
             pendingSystemName = folderDisplayName(context, uri)
         }
     }
-    val updateBundleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
+    val updateBundleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && !offlineBundleOperationInProgress) {
             scope.launch {
-                runCatching {
-                    context.contentResolver.openInputStream(uri).use { input ->
-                        updateService.importOfflineBundle(requireNotNull(input) { "Could not open the selected update bundle" })
+                offlineBundleOperationInProgress = true
+                try {
+                    val version = runCatching {
+                        context.contentResolver.openInputStream(uri).use { input ->
+                            updateService.importOfflineBundle(
+                                requireNotNull(input) { "Could not open the selected update bundle" },
+                            )
+                        }
+                    }.getOrElse { error ->
+                        if (error is OutdatedOfflineBundleException) {
+                            val deleted = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    if (DocumentsContract.isDocumentUri(context, uri)) {
+                                        DocumentsContract.deleteDocument(context.contentResolver, uri)
+                                    } else {
+                                        context.contentResolver.delete(uri, null, null) > 0
+                                    }
+                                }.getOrDefault(false)
+                            }
+                            throw OutdatedOfflineBundleException(error.bundleVersion, error.minimumVersion, deleted)
+                        }
+                        throw error
                     }
+                    SyncServiceController.requestRefresh(context)
+                    Toast.makeText(context, "Update $version verified and seeded to the mesh.", Toast.LENGTH_LONG).show()
+                } catch (error: Throwable) {
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Could not import the offline update bundle.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } finally {
+                    offlineBundleOperationInProgress = false
                 }
             }
         }
@@ -1084,7 +1115,30 @@ fun SyncDroidApp() {
                                 is UpdateState.Checking, is UpdateState.Downloading -> Unit
                             }
                         },
-                        onImportUpdateBundle = { updateBundleLauncher.launch("*/*") },
+                        onImportUpdateBundle = { updateBundleLauncher.launch(arrayOf("*/*")) },
+                        onDownloadUpdateBundle = {
+                            if (!offlineBundleOperationInProgress) scope.launch {
+                                offlineBundleOperationInProgress = true
+                                try {
+                                    val version = updateService.downloadAndImportLatestOfflineBundle()
+                                    SyncServiceController.requestRefresh(context)
+                                    Toast.makeText(
+                                        context,
+                                        "Update $version downloaded and seeded to the mesh.",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                } catch (error: Throwable) {
+                                    Toast.makeText(
+                                        context,
+                                        error.message ?: "Could not download the offline update bundle.",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                } finally {
+                                    offlineBundleOperationInProgress = false
+                                }
+                            }
+                        },
+                        offlineBundleBusy = offlineBundleOperationInProgress,
                         darkTheme = darkTheme,
                         onDarkThemeChange = { selectedDarkTheme ->
                             darkTheme = selectedDarkTheme
@@ -2713,6 +2767,8 @@ private fun SettingsScreen(
     updateState: UpdateState,
     onUpdateAction: () -> Unit,
     onImportUpdateBundle: () -> Unit,
+    onDownloadUpdateBundle: () -> Unit,
+    offlineBundleBusy: Boolean,
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
     onOpenPowerSettings: () -> Unit,
@@ -2801,9 +2857,20 @@ private fun SettingsScreen(
             item {
                 SettingsCard {
                     SettingsActionRow(
+                        icon = Icons.Rounded.Cloud,
+                        title = "Download offline bundle",
+                        detail = if (offlineBundleBusy) {
+                            "Downloading and verifying the latest GitHub release…"
+                        } else {
+                            "Download the latest signed release and seed every platform"
+                        },
+                        onClick = onDownloadUpdateBundle,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                    SettingsActionRow(
                         icon = Icons.Rounded.SystemUpdateAlt,
                         title = "Import offline update bundle",
-                        detail = "Verify and seed a signed .sdu release across the mesh",
+                        detail = "Choose a signed .sdu file; verified outdated bundles are deleted",
                         onClick = onImportUpdateBundle,
                     )
                 }

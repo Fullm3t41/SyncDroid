@@ -80,6 +80,15 @@ sealed interface UpdateState {
 
 enum class UpdateSource { GitHub, Mesh, OfflineBundle, Cache }
 
+class OutdatedOfflineBundleException(
+    val bundleVersion: String,
+    val minimumVersion: String,
+    val sourceDeleted: Boolean = false,
+) : IllegalArgumentException(
+    "Offline update $bundleVersion is older than $minimumVersion" +
+        if (sourceDeleted) " and was deleted." else ".",
+)
+
 interface MeshUpdateCache {
     fun availableAssets(): List<UpdateAssetDescriptor>
     fun desiredAsset(): UpdateAssetDescriptor?
@@ -132,11 +141,7 @@ class ReleaseUpdateService(
         val checkedAt = now()
         lastCheckStore.save(checkedAt)
         runCatching {
-            val candidate = withContext(Dispatchers.IO) {
-                val manifestText = httpGetText(manifestUrl)
-                val signatureText = httpGetText(releaseSignatureUrl(manifestUrl))
-                SignedReleaseManifest.verify(manifestText, signatureText, trustedPublicKeyBase64)
-            }
+            val candidate = withContext(Dispatchers.IO) { fetchSignedManifest() }
             acceptSignedManifest(candidate)
             if (isNewerVersion(candidate.manifest.version, currentVersion)) {
                 refreshStateFromCache(UpdateSource.Cache)
@@ -176,11 +181,14 @@ class ReleaseUpdateService(
         }
     }
 
-    suspend fun importOfflineBundle(path: Path) {
+    suspend fun importOfflineBundle(path: Path): String = try {
         Files.newInputStream(path).use { importOfflineBundle(it) }
+    } catch (error: OutdatedOfflineBundleException) {
+        val deleted = withContext(Dispatchers.IO) { runCatching { Files.deleteIfExists(path) }.getOrDefault(false) }
+        throw OutdatedOfflineBundleException(error.bundleVersion, error.minimumVersion, deleted)
     }
 
-    suspend fun importOfflineBundle(input: InputStream) = operationMutex.withLock {
+    suspend fun importOfflineBundle(input: InputStream): String = operationMutex.withLock {
         runCatching { withContext(Dispatchers.IO) { importBundleLocked(input) } }
             .onFailure { error ->
                 if (error is CancellationException) throw error
@@ -192,6 +200,32 @@ class ReleaseUpdateService(
                 )
             }
             .getOrThrow()
+    }
+
+    suspend fun downloadAndImportLatestOfflineBundle(): String = operationMutex.withLock {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val candidate = fetchSignedManifest()
+                rejectOutdatedOfflineBundle(candidate)
+                acceptSignedManifest(candidate)
+                val connection = openConnection(offlineBundleDownloadUrl(candidate.manifest))
+                try {
+                    connection.connect()
+                    require(connection.responseCode in 200..299) { githubHttpError(connection.responseCode) }
+                    connection.inputStream.buffered().use(::importBundleLocked)
+                } finally {
+                    connection.disconnect()
+                }
+            }
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            val stillAvailable = signedManifest?.manifest?.let { isNewerVersion(it.version, currentVersion) } == true
+            mutableState.value = UpdateState.Failed(
+                currentVersion,
+                error.message ?: "Could not download the offline update bundle",
+                updateStillAvailable = stillAvailable,
+            )
+        }.getOrThrow()
     }
 
     fun installerPath(): Path? = (state.value as? UpdateState.Ready)?.installer
@@ -303,7 +337,7 @@ class ReleaseUpdateService(
         }
     }
 
-    private fun importBundleLocked(input: InputStream) {
+    private fun importBundleLocked(input: InputStream): String {
         Files.createDirectories(cacheDirectory)
         val temporaryBundle = cacheDirectory.resolve(".offline-import-${UUID.randomUUID()}.sdu")
         try {
@@ -330,6 +364,7 @@ class ReleaseUpdateService(
                 val manifestText = String(zip.readSmallEntry(manifestEntry, SignedReleaseManifest.MAX_MANIFEST_BYTES), StandardCharsets.UTF_8)
                 val signatureText = String(zip.readSmallEntry(signatureEntry, MAX_SIGNATURE_FILE_BYTES), StandardCharsets.UTF_8)
                 val candidate = SignedReleaseManifest.verify(manifestText, signatureText, trustedPublicKeyBase64)
+                rejectOutdatedOfflineBundle(candidate)
                 validateCandidateVersion(candidate)
                 require(candidate.manifest.assets.map { it.platform }.toSet() == UpdatePlatform.entries.toSet()) {
                     "Offline update bundle must contain Android, macOS and Windows releases"
@@ -370,6 +405,7 @@ class ReleaseUpdateService(
                 }
                 acceptSignedManifest(candidate)
                 refreshStateFromCache(UpdateSource.OfflineBundle)
+                return candidate.manifest.version
             }
         } finally {
             Files.deleteIfExists(temporaryBundle)
@@ -507,6 +543,17 @@ class ReleaseUpdateService(
         }
     }
 
+    private fun rejectOutdatedOfflineBundle(candidate: SignedReleaseManifest) {
+        val minimum = sequenceOf(currentVersion, signedManifest?.manifest?.version)
+            .filterNotNull()
+            .maxWithOrNull(compareBy { requireNotNull(SemanticVersion.parse(it)) })
+            ?: currentVersion
+        val candidateVersion = requireNotNull(SemanticVersion.parse(candidate.manifest.version))
+        if (candidateVersion < requireNotNull(SemanticVersion.parse(minimum))) {
+            throw OutdatedOfflineBundleException(candidate.manifest.version, minimum)
+        }
+    }
+
     private fun refreshStateFromCache(source: UpdateSource) {
         val cached = signedManifest?.manifest ?: return
         if (!isNewerVersion(cached.version, currentVersion)) return
@@ -571,6 +618,12 @@ class ReleaseUpdateService(
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun fetchSignedManifest(): SignedReleaseManifest {
+        val manifestText = httpGetText(manifestUrl)
+        val signatureText = httpGetText(releaseSignatureUrl(manifestUrl))
+        return SignedReleaseManifest.verify(manifestText, signatureText, trustedPublicKeyBase64)
     }
 
     private fun openConnection(url: String): HttpURLConnection {

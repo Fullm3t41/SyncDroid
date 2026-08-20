@@ -107,3 +107,8 @@ fun isNewerVersion(candidate: String, current: String): Boolean {
     val currentVersion = SemanticVersion.parse(current) ?: return false
     return candidateVersion > currentVersion
 }
+
+internal fun offlineBundleDownloadUrl(manifest: ReleaseManifest): String {
+    val releaseDirectory = manifest.assets.first().downloadUrl.substringBeforeLast('/')
+    return "$releaseDirectory/SyncDroid-Mesh-${manifest.version}-offline.sdu"
+}

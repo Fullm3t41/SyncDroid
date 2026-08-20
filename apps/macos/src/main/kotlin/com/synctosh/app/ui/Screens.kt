@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
@@ -893,6 +894,7 @@ fun SettingsScreen(
     updateState: UpdateState,
     onUpdateAction: () -> Unit,
     onImportUpdateBundle: () -> Unit,
+    onDownloadUpdateBundle: () -> Unit,
     offlineUpdateImportUnlocked: Boolean,
     onOfflineUpdateImportUnlocked: () -> Unit,
     themeMode: ThemeMode,
@@ -996,9 +998,16 @@ fun SettingsScreen(
                         if (offlineUpdateImportUnlocked) {
                             SettingsCard {
                                 SettingsActionRow(
+                                    icon = Icons.Rounded.CloudDownload,
+                                    title = "Download offline bundle",
+                                    detail = "Download the latest signed GitHub release and seed every platform",
+                                    onClick = onDownloadUpdateBundle,
+                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                SettingsActionRow(
                                     icon = Icons.Rounded.SystemUpdateAlt,
                                     title = "Import offline update bundle",
-                                    detail = "Verify and seed a signed .sdu release across the mesh",
+                                    detail = "Choose a signed .sdu file; verified outdated bundles are deleted",
                                     onClick = onImportUpdateBundle,
                                 )
                             }

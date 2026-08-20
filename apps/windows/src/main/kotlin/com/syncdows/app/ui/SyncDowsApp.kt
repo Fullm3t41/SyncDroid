@@ -76,6 +76,7 @@ fun SyncDowsApp(
     var offlineUpdateImportUnlocked by remember { mutableStateOf(preferences.offlineUpdateImportUnlocked) }
     var secondaryScreen by remember { mutableStateOf<SecondaryScreen?>(null) }
     var featureNotice by remember { mutableStateOf<String?>(null) }
+    var updateBundleNotice by remember { mutableStateOf<String?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameDraft by remember { mutableStateOf(deviceName) }
     var showCreateMesh by remember { mutableStateOf(false) }
@@ -321,7 +322,28 @@ fun SyncDowsApp(
                                 },
                                 onImportUpdateBundle = {
                                     WindowsFolderPicker.chooseOfflineUpdateBundle()?.let { bundle ->
-                                        scope.launch { runCatching { updateService.importOfflineBundle(bundle) } }
+                                        scope.launch {
+                                            runCatching { updateService.importOfflineBundle(bundle) }
+                                                .onSuccess { version ->
+                                                    runtime.syncNow()
+                                                    updateBundleNotice = "Update $version was verified and is now available to the mesh."
+                                                }
+                                                .onFailure { error ->
+                                                    updateBundleNotice = error.message ?: "Could not import the offline update bundle."
+                                                }
+                                        }
+                                    }
+                                },
+                                onDownloadUpdateBundle = {
+                                    scope.launch {
+                                        runCatching { updateService.downloadAndImportLatestOfflineBundle() }
+                                            .onSuccess { version ->
+                                                runtime.syncNow()
+                                                updateBundleNotice = "Update $version was downloaded and is now available to the mesh."
+                                            }
+                                            .onFailure { error ->
+                                                updateBundleNotice = error.message ?: "Could not download the offline update bundle."
+                                            }
                                     }
                                 },
                                 offlineUpdateImportUnlocked = offlineUpdateImportUnlocked,
@@ -632,6 +654,16 @@ fun SyncDowsApp(
                 },
                 confirmButton = {
                     TextButton(onClick = { featureNotice = null }) { Text("Done") }
+                },
+            )
+        }
+        updateBundleNotice?.let { notice ->
+            AlertDialog(
+                onDismissRequest = { updateBundleNotice = null },
+                title = { Text("Offline update bundle") },
+                text = { Text(notice) },
+                confirmButton = {
+                    TextButton(onClick = { updateBundleNotice = null }) { Text("Done") }
                 },
             )
         }
