@@ -27,10 +27,14 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.syncdows.app.mesh.VisiblePairingOffer
+import com.syncdows.app.platform.WindowsTouchKeyboard
 import kotlinx.coroutines.delay
 
 @Composable
@@ -158,9 +162,25 @@ private fun CodeBox(
         value = value,
         onValueChange = onChange,
         enabled = enabled,
-        modifier = modifier.size(width = 48.dp, height = 58.dp),
+        modifier = modifier
+            .size(width = 48.dp, height = 58.dp)
+            .showWindowsTouchKeyboardOnTap(enabled),
         textStyle = MaterialTheme.typography.titleLarge.copy(textAlign = TextAlign.Center),
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
     )
+}
+
+private fun Modifier.showWindowsTouchKeyboardOnTap(enabled: Boolean): Modifier {
+    if (!enabled) return this
+    return pointerInput(enabled) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+                if (event.type == PointerEventType.Release) {
+                    WindowsTouchKeyboard.show()
+                }
+            }
+        }
+    }
 }

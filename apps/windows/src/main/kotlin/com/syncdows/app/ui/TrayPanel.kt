@@ -1,13 +1,18 @@
 package com.syncdows.app.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -84,10 +89,19 @@ fun TrayPanelWindow(
     onQuit: () -> Unit,
 ) {
     val visiblePeerCount = min(meshState.peers.size, 5)
-    val panelHeight = (414 + visiblePeerCount * 34).dp
+    val desiredPanelHeight = 414 + visiblePeerCount * 34
+    val configuration = screenConfigurationAt(anchor)
+    val screenInsets = Toolkit.getDefaultToolkit().getScreenInsets(configuration)
+    val workAreaHeight = configuration.bounds.height - screenInsets.top - screenInsets.bottom
+    val panelHeight = trayPanelHeightDp(
+        desiredHeightDp = desiredPanelHeight,
+        workAreaHeightPixels = workAreaHeight,
+        displayScale = configuration.defaultTransform.scaleY,
+    ).dp
     val windowState = rememberDialogState(width = 376.dp, height = panelHeight)
     var intervalMenuExpanded by remember { mutableStateOf(false) }
     var durationMenuExpanded by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
 
     DialogWindow(
         title = "SyncDows status",
@@ -121,10 +135,15 @@ fun TrayPanelWindow(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 shadowElevation = 16.dp,
             ) {
-                Column(
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(11.dp),
-                ) {
+                Box(Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .windowsTouchDragScroll(scrollState)
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(11.dp),
+                    ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
                             modifier = Modifier.size(38.dp),
@@ -235,7 +254,14 @@ fun TrayPanelWindow(
                             durationMenuExpanded = false
                         },
                     )
-                    Spacer(Modifier.weight(1f))
+                    }
+                    VerticalScrollbar(
+                        adapter = rememberScrollbarAdapter(scrollState),
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .padding(vertical = 14.dp, horizontal = 3.dp),
+                    )
                 }
             }
         }
@@ -368,13 +394,27 @@ internal fun trayPanelLocation(
     )
 }
 
-private fun positionTrayPanel(window: java.awt.Window, anchor: Point) {
-    val configuration = GraphicsEnvironment.getLocalGraphicsEnvironment()
+internal fun trayPanelHeightDp(
+    desiredHeightDp: Int,
+    workAreaHeightPixels: Int,
+    displayScale: Double,
+    marginPixels: Int = 12,
+): Int {
+    val usablePixels = (workAreaHeightPixels - marginPixels * 2).coerceAtLeast(1)
+    val safeScale = displayScale.takeIf { it.isFinite() && it > 0.0 } ?: 1.0
+    return min(desiredHeightDp, (usablePixels / safeScale).toInt().coerceAtLeast(1))
+}
+
+private fun screenConfigurationAt(anchor: Point): java.awt.GraphicsConfiguration =
+    GraphicsEnvironment.getLocalGraphicsEnvironment()
         .screenDevices
         .asSequence()
         .map { it.defaultConfiguration }
         .firstOrNull { it.bounds.contains(anchor) }
-        ?: window.graphicsConfiguration
+        ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration
+
+private fun positionTrayPanel(window: java.awt.Window, anchor: Point) {
+    val configuration = runCatching { screenConfigurationAt(anchor) }.getOrElse { window.graphicsConfiguration }
     val location = trayPanelLocation(
         anchor = anchor,
         screenBounds = configuration.bounds,

@@ -56,7 +56,7 @@ fun CloudSyncSettingsScreen(
 ) {
     Column(Modifier.fillMaxSize()) {
         SettingsDetailTopBar("Cloud sync", onBack)
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -148,7 +148,7 @@ fun BackgroundOperationScreen(
 ) {
     Column(Modifier.fillMaxSize()) {
         SettingsDetailTopBar("Background operation", onBack)
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),

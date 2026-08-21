@@ -132,7 +132,7 @@ fun SyncScreen(
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -299,7 +299,7 @@ fun FoldersScreen(
     var explanationExpanded by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -503,7 +503,7 @@ fun DevicesScreen(
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -752,7 +752,7 @@ fun ChatScreen(
                     )
                 }
             } else {
-                LazyColumn(
+                WindowsTouchLazyColumn(
                     state = listState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = 22.dp, vertical = 20.dp),
@@ -929,7 +929,7 @@ fun SettingsScreen(
     var aboutTapCount by remember { mutableIntStateOf(0) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1154,7 +1154,7 @@ fun SyncExceptionsScreen(
                 )
             }
         } else {
-            LazyColumn(
+            WindowsTouchLazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1231,7 +1231,7 @@ fun ConflictReviewScreen(
                 EmptyStateCard("No conflicts", "SyncDows will list concurrent file edits here when your choice is required.")
             }
         } else {
-            LazyColumn(
+            WindowsTouchLazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1356,7 +1356,7 @@ fun FileHistoryScreen(
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
         )
-        LazyColumn(
+        WindowsTouchLazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1516,7 +1516,7 @@ fun PowerDiscoveryScreen(
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
         )
-        LazyColumn(
+        WindowsTouchLazyColumn(
             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(15.dp),
         ) {

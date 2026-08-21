@@ -9,6 +9,30 @@ import kotlin.test.assertEquals
 
 class TrayPanelTest {
     @Test
+    fun constrainsPanelHeightToScaledWorkArea() {
+        assertEquals(
+            556,
+            trayPanelHeightDp(
+                desiredHeightDp = 584,
+                workAreaHeightPixels = 720,
+                displayScale = 1.25,
+            ),
+        )
+    }
+
+    @Test
+    fun keepsDesiredPanelHeightWhenItFits() {
+        assertEquals(
+            482,
+            trayPanelHeightDp(
+                desiredHeightDp = 482,
+                workAreaHeightPixels = 1_040,
+                displayScale = 1.5,
+            ),
+        )
+    }
+
+    @Test
     fun positionsPanelAboveBottomRightTrayAnchor() {
         val location = trayPanelLocation(
             anchor = Point(1900, 1040),
