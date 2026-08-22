@@ -15,7 +15,8 @@ SyncDows is the Windows peer in the SyncDroid-Mesh local-Wi-Fi network. It uses 
 - Signed overwrite-only exception listing and Undo controls.
 - Mesh-wide device renaming/removal and a signed Leave mesh flow.
 - Multiple registered Wi-Fi networks for background-only power restrictions.
-- Close-to-tray operation with discovery interval and duration controls.
+- Lightweight tray worker with discovery interval and duration controls. The full Compose/Skia UI runs in a separate process and unloads when its window closes.
+- Scheduled discovery closes UDP and Bonjour sockets between windows, polls Wi-Fi less often in the background and lets active transfers finish before changing processes.
 - Self-contained branded EXE configuration for native Windows builds.
 
 ## Development verification

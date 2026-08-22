@@ -11,6 +11,9 @@ object WindowsAppPaths {
     val identity: Path get() = applicationData.resolve("identity.p12")
     val transfers: Path get() = applicationData.resolve("transfers")
     val updates: Path get() = applicationData.resolve("updates")
+    val workerEndpoint: Path get() = applicationData.resolve("worker.endpoint")
+    val workerLock: Path get() = applicationData.resolve("worker.lock")
+    val workerLog: Path get() = applicationData.resolve("worker.log")
 
     internal fun applicationDataPath(localAppData: String?, userHome: String): Path {
         val root = localAppData?.trim()?.takeIf(String::isNotEmpty)?.let(Path::of)

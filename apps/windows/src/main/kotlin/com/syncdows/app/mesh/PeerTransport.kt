@@ -4,10 +4,13 @@ import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.security.KeyStore
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -19,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.syncdroid.shared.protocol.PairingCompletionMessage
@@ -52,10 +56,11 @@ class DeviceTlsContext(
             needClientAuth = true
         }
 
-    fun clientSocket(address: InetAddress, port: Int): SSLSocket =
-        (context.socketFactory.createSocket(address, port) as SSLSocket).apply {
+    fun clientSocket(): SSLSocket =
+        (context.socketFactory.createSocket() as SSLSocket).apply {
             enabledProtocols = arrayOf("TLSv1.2")
             useClientMode = true
+            soTimeout = PEER_INACTIVITY_TIMEOUT_MILLIS
         }
 }
 
@@ -77,7 +82,12 @@ private class PinnedTrustManager(
     }
 }
 
-class AuthenticatedPeerConnection internal constructor(private val socket: SSLSocket) : Closeable {
+class AuthenticatedPeerConnection internal constructor(
+    private val socket: SSLSocket,
+    private val onClosed: () -> Unit = {},
+) : Closeable {
+    private val closed = AtomicBoolean(false)
+    private val lastActivityMillis = AtomicLong(System.currentTimeMillis())
     val peerTlsIdentity: PeerTlsIdentity by lazy {
         val certificate = socket.session.peerCertificates.singleOrNull() as? X509Certificate
             ?: throw CertificateException("Peer must present one certificate")
@@ -88,15 +98,52 @@ class AuthenticatedPeerConnection internal constructor(private val socket: SSLSo
 
     suspend fun send(message: ByteArray) = withContext(Dispatchers.IO) {
         require(message.size <= MAX_MESSAGE_BYTES)
+        markActivity()
         synchronized(output) { output.writeInt(message.size); output.write(message); output.flush() }
+        markActivity()
     }
 
     suspend fun receive(): ByteArray = withContext(Dispatchers.IO) {
+        markActivity()
         val size = input.readInt().also { require(it in 0..MAX_MESSAGE_BYTES) }
-        ByteArray(size).also(input::readFully)
+        ByteArray(size).also(input::readFully).also { markActivity() }
     }
 
-    override fun close() = socket.close()
+    internal fun inactiveSince(cutoffMillis: Long): Boolean = lastActivityMillis.get() <= cutoffMillis
+    private fun markActivity() { lastActivityMillis.set(System.currentTimeMillis()) }
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        try {
+            socket.close()
+        } finally {
+            onClosed()
+        }
+    }
+}
+
+internal class PeerSocketTracker : Closeable {
+    private val closed = AtomicBoolean(false)
+    private val sockets = ConcurrentHashMap.newKeySet<SSLSocket>()
+
+    fun register(socket: SSLSocket) {
+        check(!closed.get()) { "Peer socket tracker is closed" }
+        sockets += socket
+        if (closed.get() && sockets.remove(socket)) {
+            socket.close()
+            error("Peer socket tracker closed during connection setup")
+        }
+    }
+
+    fun release(socket: SSLSocket) {
+        sockets.remove(socket)
+    }
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        sockets.toList().forEach { socket -> runCatching { socket.close() } }
+        sockets.clear()
+    }
 }
 
 class MeshPeerServer(
@@ -106,6 +153,8 @@ class MeshPeerServer(
     private val running = AtomicBoolean(false)
     private var server: SSLServerSocket? = null
     private var scope: CoroutineScope? = null
+    private var lifecycleJob: Job? = null
+    private val activeSockets = ConcurrentHashMap.newKeySet<SSLSocket>()
     val port get() = server?.localPort ?: 0
 
     fun start(): Int {
@@ -114,19 +163,32 @@ class MeshPeerServer(
         server = socket
         val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = serverScope
+        lifecycleJob = serverScope.coroutineContext[Job]
         serverScope.launch {
             while (isActive && running.get()) {
                 val accepted = runCatching { socket.accept() as SSLSocket }.getOrElse {
                     if (running.get()) throw it else break
                 }
+                accepted.soTimeout = PEER_INACTIVITY_TIMEOUT_MILLIS
+                activeSockets += accepted
+                if (!running.get()) {
+                    activeSockets.remove(accepted)
+                    accepted.close()
+                    break
+                }
                 launch {
-                    runCatching {
-                        accepted.startHandshake()
-                        AuthenticatedPeerConnection(accepted).use { connection ->
-                            connection.peerTlsIdentity
-                            onConnection(connection)
+                    try {
+                        runCatching {
+                            accepted.startHandshake()
+                            AuthenticatedPeerConnection(accepted).use { connection ->
+                                connection.peerTlsIdentity
+                                onConnection(connection)
+                            }
                         }
-                    }.onFailure { runCatching { accepted.close() } }
+                    } finally {
+                        activeSockets.remove(accepted)
+                        runCatching { accepted.close() }
+                    }
                 }
             }
         }
@@ -134,15 +196,37 @@ class MeshPeerServer(
     }
 
     override fun close() {
-        running.set(false); runCatching { server?.close() }; scope?.cancel(); server = null; scope = null
+        running.set(false)
+        runCatching { server?.close() }
+        activeSockets.toList().forEach { socket -> runCatching { socket.close() } }
+        scope?.cancel()
+        server = null
+        scope = null
+    }
+
+    suspend fun awaitClosed() {
+        lifecycleJob?.join()
+        lifecycleJob = null
     }
 }
 
-class MeshPeerClient(private val tls: DeviceTlsContext) {
+internal class MeshPeerClient(
+    private val tls: DeviceTlsContext,
+    private val socketTracker: PeerSocketTracker? = null,
+) {
     suspend fun connect(address: InetAddress, port: Int): AuthenticatedPeerConnection = withContext(Dispatchers.IO) {
-        val socket = tls.clientSocket(address, port)
-        socket.startHandshake()
-        AuthenticatedPeerConnection(socket).also { it.peerTlsIdentity }
+        val socket = tls.clientSocket()
+        try {
+            socketTracker?.register(socket)
+            socket.connect(InetSocketAddress(address, port), PEER_CONNECT_TIMEOUT_MILLIS)
+            socket.startHandshake()
+            AuthenticatedPeerConnection(socket) { socketTracker?.release(socket) }
+                .also { it.peerTlsIdentity }
+        } catch (error: Throwable) {
+            socketTracker?.release(socket)
+            runCatching { socket.close() }
+            throw error
+        }
     }
 }
 
@@ -174,3 +258,6 @@ object PairingCompletionCodec {
 }
 
 private const val MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+private const val PEER_CONNECT_TIMEOUT_MILLIS = 10_000
+// This is an inactivity limit, not a transfer-duration limit: every successful socket read resets it.
+internal const val PEER_INACTIVITY_TIMEOUT_MILLIS = 300_000

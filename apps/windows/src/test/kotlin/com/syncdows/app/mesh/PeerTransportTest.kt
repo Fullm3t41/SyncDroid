@@ -5,6 +5,9 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -48,6 +51,58 @@ class PeerTransportTest {
         } finally {
             server.close()
         }
+    }
+
+    @Test
+    fun closingServerInterruptsAConnectionBlockedOnTlsRead() = runBlocking {
+        val serverIdentity = memoryIdentity("blocked-server")
+        val clientIdentity = memoryIdentity("blocked-client")
+        val receiving = CompletableDeferred<Unit>()
+        val released = CompletableDeferred<Unit>()
+        val server = MeshPeerServer(DeviceTlsContext(serverIdentity, allowUnknownPeer = true)) { connection ->
+            receiving.complete(Unit)
+            runCatching { connection.receive() }
+            released.complete(Unit)
+        }
+        val client = MeshPeerClient(DeviceTlsContext(clientIdentity, allowUnknownPeer = true))
+            .connect(InetAddress.getLoopbackAddress(), server.start())
+        try {
+            withTimeout(2_000) { receiving.await() }
+            server.close()
+            withTimeout(2_000) {
+                released.await()
+                server.awaitClosed()
+            }
+        } finally {
+            client.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun closingOutboundSocketTrackerInterruptsAClientBlockedOnTlsRead() = runBlocking {
+        val serverIdentity = memoryIdentity("tracked-server")
+        val clientIdentity = memoryIdentity("tracked-client")
+        val accepted = CompletableDeferred<Unit>()
+        val server = MeshPeerServer(DeviceTlsContext(serverIdentity, allowUnknownPeer = true)) {
+            accepted.complete(Unit)
+            awaitCancellation()
+        }
+        val tracker = PeerSocketTracker()
+        val client = MeshPeerClient(DeviceTlsContext(clientIdentity, allowUnknownPeer = true), tracker)
+            .connect(InetAddress.getLoopbackAddress(), server.start())
+        try {
+            withTimeout(2_000) { accepted.await() }
+            val blockedRead = async(Dispatchers.IO) { runCatching { client.receive() } }
+            tracker.close()
+            withTimeout(2_000) { blockedRead.await() }
+        } finally {
+            client.close()
+            tracker.close()
+            server.close()
+            withTimeout(2_000) { server.awaitClosed() }
+        }
+        Unit
     }
 
     private fun memoryIdentity(alias: String): WindowsDeviceIdentity {
